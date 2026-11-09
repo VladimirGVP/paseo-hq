@@ -100,3 +100,23 @@ test("доски: подключение, сохранение, слияние �
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("доски: ensureRepo считает эквивалентными SSH и HTTPS адреса одного репозитория", async () => {
+  const root = await mkdtemp(join(tmpdir(), "hq-match-"));
+  try {
+    const { ensureRepo } = await import("../server/team.server.ts");
+    await exec("git", ["init", "-q", root]);
+    await exec("git", ["-C", root, "remote", "add", "origin", "git@github.com:gnatovskie/hq-team.git"]);
+
+    // Не должно бросать ошибку о чужом репозитории, когда это тот же репозиторий через HTTPS
+    await ensureRepo({
+      id: "b_test",
+      url: "https://github.com/gnatovskie/hq-team",
+      branch: "main",
+      dir: root,
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+

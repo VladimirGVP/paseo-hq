@@ -48,6 +48,30 @@ function normalizeUrl(url: string): string {
   return trimmed;
 }
 
+export function canonicalRepoKey(raw: string): string {
+  const trimmed = normalizeUrl(raw);
+  const sshMatch = trimmed.match(/^git@([^:]+):(.+?)(?:\.git)?\/?$/);
+  if (sshMatch) {
+    return `${sshMatch[1]}/${sshMatch[2].replace(/^\/+/, "")}`.toLowerCase();
+  }
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol === "file:") {
+      return parsed.pathname.replace(/\.git\/?$/, "").replace(/\/+$/, "");
+    }
+    const host = parsed.host.toLowerCase();
+    const pathname = parsed.pathname.replace(/\.git\/?$/, "").replace(/^\/+/, "").replace(/\/+$/, "");
+    return `${host}/${pathname}`.toLowerCase();
+  } catch {
+    return trimmed.replace(/\.git\/?$/, "").replace(/\/+$/, "").toLowerCase();
+  }
+}
+
+export function sameRepoUrl(a: string, b: string): boolean {
+  if (a.trim() === b.trim()) return true;
+  return canonicalRepoKey(a) === canonicalRepoKey(b);
+}
+
 function errorText(err: unknown): string {
   const e = err as { stderr?: string; stdout?: string; message?: string };
   const text = [e?.stderr, e?.stdout, e?.message].filter(Boolean).join("\n").trim();
@@ -148,7 +172,7 @@ export async function ensureRepo(cfg: BoardConfig): Promise<void> {
     }
   } else {
     const origin = await remoteUrl(cfg.dir);
-    if (origin && origin !== cfg.url) {
+    if (origin && !sameRepoUrl(origin, cfg.url)) {
       throw new Error("к папке уже подключён другой репозиторий, сначала отключите текущую доску");
     }
   }
