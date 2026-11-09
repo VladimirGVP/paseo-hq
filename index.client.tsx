@@ -48,6 +48,7 @@ import { GENERATOR_TITLE, titleModelOptions } from "./shared/title-models";
 import { TitleModelPicker } from "./client/title-model-picker.client";
 import { HostMetricsBar } from "./client/host-widget";
 import { WorkersMetricsBar, WorkersSurface } from "./client/workers-widget";
+import { TeamSurface } from "./client/team-surface";
 import { contributeComposerPills } from "./client/pills.client";
 import { contributeLimitAlerts } from "./client/limit-alerts.client";
 import { UsageLimitsPanel, UsageLimitsSurface } from "./client/limits.client";
@@ -1676,9 +1677,9 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
 
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="Работники и команда"
+          accessibilityLabel="Команда и задачи"
           onPress={() => {
-            openScreen({ screenId: "workers" });
+            openScreen({ screenId: "team" });
           }}
           style={({ pressed }) => ({
             flex: 1,
@@ -3306,6 +3307,7 @@ export default function contribute(client: PluginClientContext) {
   const removeServicesSurface = client.addSurface("services", Services);
   const removeArtifactsSurface = client.addSurface("artifacts", ArtifactsSurface);
   const removeWorkersSurface = client.addSurface("workers", WorkersSurface);
+  const removeTeamSurface = client.addSurface("team", TeamSurface);
 
   const removeArtifactsTransformer = client.addTimelineTransformer({
     id: "paseo-hq-artifacts",
@@ -3388,6 +3390,7 @@ export default function contribute(client: PluginClientContext) {
       removeServicesSurface();
       removeArtifactsSurface();
       removeWorkersSurface();
+      removeTeamSurface();
       removeArtifactsTransformer();
       removeArtifactsTextRenderer();
       removeArtifactsBlockRenderer();

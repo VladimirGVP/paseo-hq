@@ -23,7 +23,7 @@
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --test server/*.test.mjs client/*.test.mjs"
+    "test": "node --test shared/*.test.mjs server/*.test.mjs client/*.test.mjs"
   },
   "devDependencies": {
     "@getpaseo/plugin": ">=0.15.0",

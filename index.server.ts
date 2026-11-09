@@ -36,6 +36,22 @@ import {
   type SidebarState,
 } from "./shared/contracts";
 import { ArtifactsService } from "./server/artifacts-service.server";
+import {
+  EMPTY_BOARD,
+  teamConnectRpc,
+  teamDisconnectRpc,
+  teamSaveRpc,
+  teamStateRpc,
+  teamSyncRpc,
+} from "./shared/team";
+import {
+  connectRepo,
+  disconnectRepo,
+  readBoard,
+  readRepoConfig,
+  saveBoard,
+  syncBoard,
+} from "./server/team.server";
 
 import { contributeSessionTitles, suggestTitle } from "./server/session-titles.server";
 import { startSampler } from "./server/sampler";
@@ -507,6 +523,68 @@ export default function contribute(server: PluginServerContext) {
   server.handle(workersListRpc, async () => {
     const workers = await readAllWorkers();
     return { workers };
+  });
+
+  server.handle(teamStateRpc, async () => {
+    const repo = await readRepoConfig();
+    if (!repo) {
+      return { connected: false, repo: null, board: { ...EMPTY_BOARD }, error: null, syncedAt: null };
+    }
+    try {
+      const board = await readBoard(repo);
+      return { connected: true, repo, board, error: null, syncedAt: board.updatedAt || null };
+    } catch (err) {
+      return {
+        connected: true,
+        repo,
+        board: { ...EMPTY_BOARD },
+        error: String((err as Error)?.message || err),
+        syncedAt: null,
+      };
+    }
+  });
+
+  server.handle(teamConnectRpc, async ({ url, branch }) => {
+    try {
+      const { repo, board } = await connectRepo(url, branch);
+      return { ok: true, error: null, repo, board };
+    } catch (err) {
+      return {
+        ok: false,
+        error: String((err as Error)?.message || err),
+        repo: await readRepoConfig(),
+        board: { ...EMPTY_BOARD },
+      };
+    }
+  });
+
+  server.handle(teamDisconnectRpc, async () => {
+    await disconnectRepo();
+    return { ok: true };
+  });
+
+  server.handle(teamSyncRpc, async () => {
+    try {
+      const board = await syncBoard();
+      return { ok: true, error: null, board };
+    } catch (err) {
+      return {
+        ok: false,
+        error: String((err as Error)?.message || err),
+        board: { ...EMPTY_BOARD },
+      };
+    }
+  });
+
+  server.handle(teamSaveRpc, async ({ board, removedTaskIds, removedMemberIds }) => {
+    const repo = await readRepoConfig();
+    if (!repo) return { ok: false, error: "репозиторий команды не подключён", board };
+    try {
+      const saved = await saveBoard(repo, board, removedTaskIds, removedMemberIds);
+      return { ok: true, error: null, board: saved };
+    } catch (err) {
+      return { ok: false, error: String((err as Error)?.message || err), board };
+    }
   });
 
   server.handle(sidebarReadRpc, async ({ projectIds }) => {
