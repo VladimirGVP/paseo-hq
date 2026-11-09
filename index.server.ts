@@ -44,13 +44,16 @@ import {
   boardsConnectRpc,
   boardsDisconnectRpc,
   boardsListRpc,
+  boardsSelectRpc,
 } from "./shared/team";
 import {
   applyBoardChange,
   boardView,
   connectBoard,
   disconnectBoard,
+  getActiveBoardId,
   listBoards,
+  setActiveBoardId,
   syncBoard,
 } from "./server/team.server";
 
@@ -521,7 +524,15 @@ export default function contribute(server: PluginServerContext) {
   });
 
   server.handle(boardsListRpc, async () => {
-    return { boards: await listBoards() };
+    return {
+      boards: await listBoards(),
+      activeBoardId: await getActiveBoardId(),
+    };
+  });
+
+  server.handle(boardsSelectRpc, async ({ boardId }) => {
+    const active = await setActiveBoardId(boardId);
+    return { ok: true, activeBoardId: active };
   });
 
   server.handle(boardsConnectRpc, async ({ url, branch }) => {

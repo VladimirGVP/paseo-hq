@@ -20,6 +20,16 @@ export const boardsListRpc = defineRpc({
   input: z.object({}),
   output: z.object({
     boards: z.array(boardSummarySchema),
+    activeBoardId: z.string().nullable().default(null),
+  }),
+});
+
+export const boardsSelectRpc = defineRpc({
+  name: "team.boards.select",
+  input: z.object({ boardId: z.string().min(1) }),
+  output: z.object({
+    ok: z.boolean(),
+    activeBoardId: z.string(),
   }),
 });
 

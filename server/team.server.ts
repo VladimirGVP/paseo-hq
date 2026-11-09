@@ -18,15 +18,26 @@ const execFileAsync = promisify(execFile);
 
 export const BOARD_FILE = "hq.json";
 export const PENDING_FILE = "hq.pending.json";
-const CONFIG_FILE =
+const CONFIG_FILE = () =>
   process.env.PASEO_HQ_TEAM_CONFIG || join(homedir(), ".local", "state", "paseo-hq", "team.json");
-const BASE_DIR =
+const BASE_DIR = () =>
   process.env.PASEO_HQ_TEAM_DIR || join(homedir(), ".local", "state", "paseo-hq");
 
 /** Как часто отправлять накопленные правки в git. */
 export const FLUSH_INTERVAL_MS = 60_000;
 
 let cachedConfigs: BoardConfig[] | null = null;
+let cachedActiveBoardId: string | null = null;
+let cachedConfigPath: string | null = null;
+
+function checkCachePath(): void {
+  const current = CONFIG_FILE();
+  if (cachedConfigPath !== current) {
+    cachedConfigs = null;
+    cachedActiveBoardId = null;
+    cachedConfigPath = current;
+  }
+}
 
 interface Draft {
   board: TeamBoard;
@@ -128,29 +139,76 @@ async function remoteUrl(dir: string): Promise<string | null> {
   }
 }
 
-export async function readConfigs(): Promise<BoardConfig[]> {
-  if (cachedConfigs) return cachedConfigs;
+export async function readConfigFile(): Promise<{ boards: BoardConfig[]; activeBoardId: string | null }> {
+  checkCachePath();
+  if (cachedConfigs) {
+    return { boards: cachedConfigs, activeBoardId: cachedActiveBoardId };
+  }
+  const file = CONFIG_FILE();
   try {
-    const raw = JSON.parse(await readFile(CONFIG_FILE, "utf8")) as { boards?: unknown };
+    const raw = JSON.parse(await readFile(file, "utf8")) as { boards?: unknown; activeBoardId?: unknown };
     const boards = Array.isArray(raw?.boards)
       ? raw.boards
           .map((b) => boardConfigSchema.safeParse(b))
           .filter((r) => r.success)
           .map((r) => (r as { data: BoardConfig }).data)
       : [];
+    const activeBoardId = typeof raw?.activeBoardId === "string" ? raw.activeBoardId : null;
     cachedConfigs = boards;
+    cachedActiveBoardId = activeBoardId;
+    return { boards, activeBoardId };
   } catch {
     cachedConfigs = [];
+    cachedActiveBoardId = null;
+    return { boards: [], activeBoardId: null };
   }
-  return cachedConfigs;
+}
+
+export async function readConfigs(): Promise<BoardConfig[]> {
+  const { boards } = await readConfigFile();
+  return boards;
+}
+
+export async function getActiveBoardId(): Promise<string | null> {
+  const { activeBoardId, boards } = await readConfigFile();
+  if (activeBoardId && boards.some((b) => b.id === activeBoardId)) {
+    return activeBoardId;
+  }
+  return boards[0]?.id ?? null;
+}
+
+export async function setActiveBoardId(boardId: string): Promise<string> {
+  const { boards } = await readConfigFile();
+  const found = boards.find((b) => b.id === boardId);
+  if (!found) {
+    throw new Error("доска не найдена");
+  }
+  await writeConfigFile(boards, boardId);
+  return boardId;
+}
+
+export async function writeConfigFile(boards: BoardConfig[], activeBoardId?: string | null): Promise<void> {
+  const file = CONFIG_FILE();
+  await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+  const active =
+    activeBoardId !== undefined
+      ? activeBoardId
+      : cachedActiveBoardId && boards.some((b) => b.id === cachedActiveBoardId)
+        ? cachedActiveBoardId
+        : (boards[0]?.id ?? null);
+  const payload = {
+    activeBoardId: active,
+    boards,
+  };
+  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+  await writeFile(tmp, `${JSON.stringify(payload, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  await rename(tmp, file);
+  cachedConfigs = boards;
+  cachedActiveBoardId = active;
 }
 
 export async function writeConfigs(boards: BoardConfig[]): Promise<void> {
-  await mkdir(dirname(CONFIG_FILE), { recursive: true, mode: 0o700 });
-  const tmp = `${CONFIG_FILE}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(tmp, `${JSON.stringify({ boards }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-  await rename(tmp, CONFIG_FILE);
-  cachedConfigs = boards;
+  await writeConfigFile(boards);
 }
 
 async function getConfig(boardId: string): Promise<BoardConfig | undefined> {
@@ -408,22 +466,40 @@ export async function connectBoard(
 ): Promise<{ id: string; url: string; branch: string; dir: string; name: string }> {
   const normalized = normalizeUrl(url);
   const branchName = branch.trim() || "main";
+
+  // Если репозиторий уже подключён, просто делаем его активным и обновляем
+  const configs = await readConfigs();
+  const existing = configs.find((b) => sameRepoUrl(b.url, normalized) && b.branch === branchName);
+  if (existing) {
+    await pullRepo(existing);
+    const board = await readBoard(existing);
+    await setActiveBoardId(existing.id);
+    return {
+      id: existing.id,
+      url: existing.url,
+      branch: existing.branch,
+      dir: existing.dir,
+      name: boardDisplayName(existing.url, board.name),
+    };
+  }
+
   const id = newId("b");
-  const cfg: BoardConfig = { id, url: normalized, branch: branchName, dir: join(BASE_DIR, `board-${id}`) };
+  const cfg: BoardConfig = { id, url: normalized, branch: branchName, dir: join(BASE_DIR(), `board-${id}`) };
   await ensureRepo(cfg);
   await pullRepo(cfg);
   const board = await readBoard(cfg);
-  const configs = await readConfigs();
   configs.push(cfg);
-  await writeConfigs(configs);
+  await writeConfigFile(configs, id);
   return { id, url: normalized, branch: branchName, dir: cfg.dir, name: boardDisplayName(normalized, board.name) };
 }
 
 export async function disconnectBoard(boardId: string): Promise<void> {
   drafts.delete(boardId);
-  const configs = await readConfigs();
-  const cfg = configs.find((b) => b.id === boardId);
-  await writeConfigs(configs.filter((b) => b.id !== boardId));
+  const { boards, activeBoardId } = await readConfigFile();
+  const cfg = boards.find((b) => b.id === boardId);
+  const remaining = boards.filter((b) => b.id !== boardId);
+  const nextActive = activeBoardId === boardId ? (remaining[0]?.id ?? null) : activeBoardId;
+  await writeConfigFile(remaining, nextActive);
   if (cfg) {
     await removePending(cfg);
     await rename(cfg.dir, `${cfg.dir}.previous-${Date.now()}`).catch(() => undefined);

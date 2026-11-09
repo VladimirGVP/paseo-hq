@@ -120,3 +120,44 @@ test("доски: ensureRepo считает эквивалентными SSH и 
   }
 });
 
+test("доски: сохранение активной доски в team.json и переключение между репозиториями", async () => {
+  const root = await mkdtemp(join(tmpdir(), "hq-active-"));
+  const bare1 = join(root, "repo1.git");
+  const bare2 = join(root, "repo2.git");
+  process.env.PASEO_HQ_TEAM_DIR = root;
+  process.env.PASEO_HQ_TEAM_CONFIG = join(root, "team.json");
+  await exec("git", ["init", "--bare", "-q", bare1]);
+  await exec("git", ["init", "--bare", "-q", bare2]);
+
+  try {
+    const { connectBoard, getActiveBoardId, setActiveBoardId, readConfigFile, listBoards } =
+      await import("../server/team.server.ts");
+
+    const b1 = await connectBoard(`file://${bare1}`, "main");
+    assert.equal(await getActiveBoardId(), b1.id);
+
+    const b2 = await connectBoard(`file://${bare2}`, "main");
+    // Новое подключение становится активным
+    assert.equal(await getActiveBoardId(), b2.id);
+
+    // Выбираем первую доску как актуальную
+    await setActiveBoardId(b1.id);
+    assert.equal(await getActiveBoardId(), b1.id);
+
+    // Проверяем сохранение в team.json
+    const disk = JSON.parse(await readFile(join(root, "team.json"), "utf8"));
+    assert.equal(disk.activeBoardId, b1.id);
+    assert.equal(disk.boards.length, 2);
+
+    // Повторное подключение существующего репозитория возвращает его же и активирует
+    const reconnected = await connectBoard(`file://${bare2}`, "main");
+    assert.equal(reconnected.id, b2.id);
+    assert.equal(await getActiveBoardId(), b2.id);
+    const boards = await listBoards();
+    assert.equal(boards.length, 2);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+

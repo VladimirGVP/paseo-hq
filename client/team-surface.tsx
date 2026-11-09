@@ -32,6 +32,7 @@ import {
   boardsConnectRpc,
   boardsDisconnectRpc,
   boardsListRpc,
+  boardsSelectRpc,
   type BoardSummary,
   type MemberKind,
   type TaskStatus,
@@ -75,6 +76,7 @@ export function TeamSurface({ theme, layout }: PluginSurfaceProps) {
   const paseo = usePaseo();
   const toast = useToast();
   const listRpc = useRpc(boardsListRpc);
+  const selectRpc = useRpc(boardsSelectRpc);
   const connectRpc = useRpc(boardsConnectRpc);
   const disconnectRpc = useRpc(boardsDisconnectRpc);
   const stateRpc = useRpc(boardStateRpc);
@@ -133,9 +135,17 @@ export function TeamSurface({ theme, layout }: PluginSurfaceProps) {
       try {
         const res = await listRpc({});
         setBoards(res.boards);
-        const id = selectId ?? (res.boards[0]?.id ?? "");
-        if (id) await selectBoard(id, true);
-        else setBoard({ ...EMPTY_BOARD });
+        const targetId =
+          selectId ||
+          (res.activeBoardId && res.boards.some((b) => b.id === res.activeBoardId)
+            ? res.activeBoardId
+            : (res.boards[0]?.id ?? ""));
+        if (targetId) {
+          await selectBoard(targetId, true);
+        } else {
+          setCurrentId("");
+          setBoard({ ...EMPTY_BOARD });
+        }
       } catch (err) {
         toast.error(err instanceof Error ? err.message : "не удалось прочитать доски");
       } finally {
@@ -143,6 +153,23 @@ export function TeamSurface({ theme, layout }: PluginSurfaceProps) {
       }
     },
     [listRpc, selectBoard, toast],
+  );
+
+  const chooseBoard = useCallback(
+    async (id: string) => {
+      if (id === currentId) return;
+      await selectBoard(id, false);
+      void selectRpc({ boardId: id }).catch(() => undefined);
+      void syncRpc({ boardId: id })
+        .then((synced) => {
+          if (synced.ok) {
+            setBoard(synced.board);
+            setError(null);
+          }
+        })
+        .catch(() => undefined);
+    },
+    [currentId, selectBoard, selectRpc, syncRpc],
   );
 
   const loadWorkers = useCallback(async () => {
@@ -228,11 +255,13 @@ export function TeamSurface({ theme, layout }: PluginSurfaceProps) {
     try {
       const res = await connectRpc({ url, branch: connectBranch.trim() || "main" });
       if (res.ok && res.board) {
-        setBoards((prev) => [...prev.filter((b) => b.id !== res.board!.id), res.board!]);
-        await selectBoard(res.board.id, false);
+        const newBoard = res.board;
+        setBoards((prev) => [...prev.filter((b) => b.id !== newBoard.id), newBoard]);
+        await selectBoard(newBoard.id, false);
+        void selectRpc({ boardId: newBoard.id }).catch(() => undefined);
         setAddingBoard(false);
         setConnectUrl("");
-        toast.show("Доска подключена", { variant: "success" });
+        toast.show("Репозиторий подключен и выбран актуальным", { variant: "success" });
       } else {
         setConnectError(res.error || "не удалось подключить репозиторий");
       }
@@ -341,12 +370,40 @@ export function TeamSurface({ theme, layout }: PluginSurfaceProps) {
   );
 
   const renderConnect = () => (
-    <View style={{ gap: 14, maxWidth: 620 }}>
+    <View
+      style={{
+        gap: 14,
+        maxWidth: 620,
+        backgroundColor: c.surface1,
+        borderWidth: 1,
+        borderColor: c.border,
+        borderRadius: 12,
+        padding: 16,
+      }}
+    >
       <View style={{ gap: 6 }}>
-        <Text style={{ color: c.foreground, fontSize: 16, fontWeight: "700" }}>Подключите доску</Text>
+        <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+          <Text style={{ color: c.foreground, fontSize: 16, fontWeight: "700" }}>
+            {boards.length > 0 ? "Подключить ещё один репозиторий" : "Подключите репозиторий команды"}
+          </Text>
+          {boards.length > 0 ? (
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => setAddingBoard(false)}
+              style={({ pressed }) => ({
+                paddingHorizontal: 10,
+                paddingVertical: 5,
+                borderRadius: 6,
+                backgroundColor: c.surface2,
+                opacity: pressed ? 0.7 : 1,
+              })}
+            >
+              <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>Закрыть</Text>
+            </Pressable>
+          ) : null}
+        </View>
         <Text style={{ color: c.foregroundMuted, fontSize: 13, lineHeight: 19 }}>
-          Команда и задачи хранятся в git-репозитории в файле hq.json. Одна доска — один репозиторий.
-          Можно подключить несколько досок и переключаться между ними.
+          Команда и задачи хранятся в git-репозитории в файле hq.json. Вы можете указать несколько репозиториев и переключаться между ними в один клик. Выбранный актуальный репозиторий сохраняется навсегда.
         </Text>
       </View>
       <SettingsInput label="Репозиторий" placeholder="github.com/you/team или git@..." onChangeText={setConnectUrl} />
@@ -355,7 +412,7 @@ export function TeamSurface({ theme, layout }: PluginSurfaceProps) {
       <SettingsAction
         label="Подключение"
         hint="Репозиторий клонируется в служебную папку штаба"
-        actionLabel={busy ? "Подключаем..." : "Подключить"}
+        actionLabel={busy ? "Подключаем..." : "Подключить и выбрать актуальным"}
         disabled={busy}
         onPress={() => void handleConnect()}
       />
@@ -653,64 +710,98 @@ export function TeamSurface({ theme, layout }: PluginSurfaceProps) {
 
         {boards.length > 0 ? (
           <View style={{ gap: 8 }}>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
-              {boards.map((b) => (
+            <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+              <Text style={{ color: c.foregroundMuted, fontSize: 11.5, fontWeight: "600", textTransform: "uppercase", letterSpacing: 0.5 }}>
+                Подключённые репозитории ({boards.length})
+              </Text>
+              {!addingBoard ? (
                 <Pressable
-                  key={b.id}
                   accessibilityRole="button"
-                  onPress={() => {
-                    void selectBoard(b.id, true);
-                  }}
+                  onPress={() => setAddingBoard(true)}
                   style={({ pressed }) => ({
-                    paddingHorizontal: 12,
-                    paddingVertical: 7,
-                    borderRadius: 9,
-                    borderWidth: 1,
-                    borderColor: b.id === currentId ? c.accent : c.border,
-                    backgroundColor: b.id === currentId ? `${c.accent}18` : c.surface2,
-                    opacity: pressed ? 0.8 : 1,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 5,
+                    paddingHorizontal: 8,
+                    paddingVertical: 4,
+                    borderRadius: 6,
+                    backgroundColor: c.surface2,
+                    opacity: pressed ? 0.7 : 1,
                   })}
                 >
-                  <Text style={{ color: b.id === currentId ? c.accent : c.foreground, fontSize: 13, fontWeight: "600" }}>
-                    {b.name}
-                  </Text>
+                  <Icon name="Plus" size={13} color={c.accent} />
+                  <Text style={{ color: c.accent, fontSize: 12, fontWeight: "600" }}>+ Добавить репозиторий</Text>
                 </Pressable>
-              ))}
-              <Pressable
-                accessibilityRole="button"
-                onPress={() => setAddingBoard(true)}
-                style={({ pressed }) => ({
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: 5,
-                  paddingHorizontal: 12,
-                  paddingVertical: 7,
-                  borderRadius: 9,
-                  borderWidth: 1,
-                  borderColor: c.border,
-                  borderStyle: "dashed",
-                  opacity: pressed ? 0.7 : 1,
-                })}
-              >
-                <Icon name="Plus" size={14} color={c.foregroundMuted} />
-                <Text style={{ color: c.foregroundMuted, fontSize: 13 }}>Доска</Text>
-              </Pressable>
+              ) : null}
+            </View>
+
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingVertical: 2 }}>
+              {boards.map((b) => {
+                const isActive = b.id === currentId;
+                const repoPath = b.url.replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/, "");
+                return (
+                  <Pressable
+                    key={b.id}
+                    accessibilityRole="button"
+                    onPress={() => void chooseBoard(b.id)}
+                    style={({ pressed }) => ({
+                      flexDirection: "row",
+                      alignItems: "center",
+                      gap: 8,
+                      paddingHorizontal: 12,
+                      paddingVertical: 8,
+                      borderRadius: 10,
+                      borderWidth: 1.5,
+                      borderColor: isActive ? c.accent : c.border,
+                      backgroundColor: isActive ? `${c.accent}18` : c.surface1,
+                      opacity: pressed ? 0.8 : 1,
+                    })}
+                  >
+                    <Icon
+                      name={isActive ? "CheckCircle2" : "GitBranch"}
+                      size={15}
+                      color={isActive ? c.accent : c.foregroundMuted}
+                    />
+                    <View style={{ gap: 1 }}>
+                      <Text
+                        style={{
+                          color: isActive ? c.accent : c.foreground,
+                          fontSize: 13,
+                          fontWeight: isActive ? "700" : "500",
+                        }}
+                      >
+                        {b.name}
+                      </Text>
+                      <Text style={{ color: c.foregroundMuted, fontSize: 11 }}>
+                        {repoPath} ({b.branch})
+                      </Text>
+                    </View>
+                    {isActive ? (
+                      <View style={{ paddingHorizontal: 6, paddingVertical: 2, borderRadius: 5, backgroundColor: `${c.accent}30` }}>
+                        <Text style={{ color: c.accent, fontSize: 10, fontWeight: "700" }}>АКТУАЛЬНЫЙ</Text>
+                      </View>
+                    ) : null}
+                  </Pressable>
+                );
+              })}
             </ScrollView>
           </View>
         ) : null}
 
         {addingBoard ? (
           renderConnect()
+        ) : loading ? (
+          <View style={{ paddingVertical: 24, alignItems: "center", gap: 8 }}>
+            <Text style={{ color: c.foregroundMuted, fontSize: 13 }}>Загрузка досок команды...</Text>
+          </View>
         ) : boards.length === 0 ? (
           renderConnect()
         ) : null}
 
         {error ? <Text style={{ color: c.statusDanger, fontSize: 12 }}>{error}</Text> : null}
 
-        {!currentId ? (
-          <Text style={{ color: c.foregroundMuted, fontSize: 13 }}>Подключите доску, чтобы начать.</Text>
-        ) : loading ? (
-          <Text style={{ color: c.foregroundMuted, fontSize: 13 }}>Читаем доску...</Text>
+        {loading ? null : !currentId ? (
+          <Text style={{ color: c.foregroundMuted, fontSize: 13 }}>Выберите актуальный репозиторий выше или подключите новый.</Text>
         ) : (
           <>
             <View
