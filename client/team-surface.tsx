@@ -850,29 +850,6 @@ export function TeamSurface({ theme, layout }: PluginSurfaceProps) {
                   </Pressable>
                 );
               })}
-
-              <Pressable
-                accessibilityRole="button"
-                onPress={() => {
-                  setConnectError(null);
-                  setAddingBoard(true);
-                }}
-                style={({ pressed }) => ({
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: 4,
-                  paddingHorizontal: 9,
-                  paddingVertical: 6,
-                  borderRadius: 8,
-                  borderWidth: 1,
-                  borderStyle: "dashed",
-                  borderColor: c.border,
-                  backgroundColor: pressed ? c.surface2 : "transparent",
-                })}
-              >
-                <Icon name="Plus" size={13} color={c.foregroundMuted} />
-                <Text style={{ color: c.foregroundMuted, fontSize: 11.5 }}>Ещё</Text>
-              </Pressable>
             </ScrollView>
           </View>
         ) : null}
