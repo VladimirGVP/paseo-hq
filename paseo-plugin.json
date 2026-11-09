@@ -1,0 +1,8 @@
+{
+  "id": "paseo-hq",
+  "name": "Штаб (Workspace HQ)",
+  "description": "Центральный штаб Paseo: проекты, сессии, артефакты, мониторинг воркеров и служб",
+  "requirements": {
+    "paseo": ">=0.15.0"
+  }
+}

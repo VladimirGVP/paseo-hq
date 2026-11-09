@@ -1,0 +1,22 @@
+[
+  {
+    "id": "alex",
+    "name": "Алексей",
+    "avatar": "🧑‍💻",
+    "role": "Fullstack Agent",
+    "container": "alex-work",
+    "user": "alex",
+    "activityPath": "/run/workers/alex-status.json",
+    "cgroupPath": "/sys/fs/cgroup/lxc.payload.alex-work"
+  },
+  {
+    "id": "sergey",
+    "name": "Сергей",
+    "avatar": "👨‍💻",
+    "role": "DevOps / Infra",
+    "container": "sergey-work",
+    "user": "sergey",
+    "activityPath": "/run/workers/sergey-status.json",
+    "cgroupPath": "/sys/fs/cgroup/lxc.payload.sergey-work"
+  }
+]

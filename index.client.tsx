@@ -1,0 +1,3381 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Animated,
+  Easing,
+  Image,
+  Pressable,
+  ScrollView,
+  Text,
+  useWindowDimensions,
+  View,
+} from "react-native";
+import type { PluginTheme } from "@getpaseo/plugin";
+import {
+  usePaseo,
+  useRpc,
+  type PluginClientContext,
+  type PluginScreenProps,
+  type PluginSidebarItemProps,
+} from "@getpaseo/plugin/client";
+import {
+  copyText,
+  Icon,
+  Modal,
+  SettingsSection,
+  SettingsSelect,
+  SettingsSwitch,
+  TextInput,
+  useToast,
+} from "@getpaseo/plugin/client/react-native";
+import type { PaseoProviderSnapshotResult, PaseoAgentListResult, PaseoProject, PaseoWorkspace } from "@getpaseo/client";
+import {
+  panelSettingsRpc,
+  projectAddRpc,
+  projectCandidatesRpc,
+  projectRemoveRpc,
+  projectSaveRpc,
+  sessionPinRpc,
+  sessionTitleSuggestRpc,
+  sessionTransferRpc,
+  sidebarReadRpc,
+  type AvatarUpdate,
+  type CandidateDir,
+  type ProjectMeta,
+  type SidebarState,
+} from "./shared/contracts";
+import { GENERATOR_TITLE, titleModelOptions } from "./shared/title-models";
+import { TitleModelPicker } from "./client/title-model-picker.client";
+import { HostMetricsBar } from "./client/host-widget";
+import { WorkersMetricsBar, WorkersSurface } from "./client/workers-widget";
+import { contributeComposerPills } from "./client/pills.client";
+import { contributeLimitAlerts } from "./client/limit-alerts.client";
+import { UsageLimitsPanel, UsageLimitsSurface } from "./client/limits.client";
+import { UsageHistoryPanel, UsageHistorySurface } from "./client/history.client";
+import { UsageSettingsSurface } from "./client/settings.client";
+import { GitWorkspaceSurface } from "./client/git-workspace-surface";
+import { GitWorkspaceSettings } from "./client/git-workspace-settings";
+import { Services } from "./client/services-surface";
+import { ArtifactsSurface } from "./client/artifacts-surface";
+import { ArtifactCard } from "./client/artifact-card";
+import {
+  splitArtifactTimelineMessage,
+  ARTIFACT_BLOCK_KIND,
+  ARTIFACT_TEXT_KIND,
+} from "./client/artifacts-segment";
+import { z } from "zod";
+import { Markdown } from "@getpaseo/plugin/client/ui";
+
+
+const EMOJI_PRESETS = ["🚀", "⚡", "🛠", "📦", "🧠", "🌐", "💳", "🎨", "🔒", "📱", "🤖", "🔥"];
+const COLOR_PRESETS = ["#3B82F6", "#8B5CF6", "#10B981", "#F59E0B", "#EF4444", "#EC4899", "#06B6D4", "#64748B"];
+
+const DEFAULT_META: ProjectMeta = {
+  avatarUri: null,
+  avatarEmoji: null,
+  avatarBg: null,
+  newSessionMode: "directory",
+  hidden: false,
+  sessionTitleModel: null,
+};
+
+type AddProjectMode = "existing" | "create" | "clone";
+type UiSessionBucket = "needs_input" | "failed" | "running" | "attention" | "done";
+type AgentEntry = PaseoAgentListResult["entries"][number];
+
+const BUCKET_PRIORITY: Record<UiSessionBucket, number> = {
+  needs_input: 0,
+  failed: 1,
+  running: 2,
+  attention: 3,
+  done: 4,
+};
+
+interface ProjectGroup {
+  id: string;
+  name: string;
+  customName: string | null;
+  displayName: string;
+  rootPath: string;
+  meta: ProjectMeta;
+  resolvedAvatarUri: string | null;
+  lastRunningAt: number;
+  /** Последний промпт Руслана в любой сессии проекта - единственный ключ порядка проектов. */
+  lastPromptAt: number;
+  hasRunning: boolean;
+  summaryBucket: UiSessionBucket;
+  chats: PaseoWorkspace[];
+}
+
+function parseIsoMs(iso: string | null | undefined): number {
+  if (!iso) return 0;
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function projectTitle(p: PaseoProject): string {
+  return p.projectCustomName || p.projectDisplayName || p.projectRootPath.split("/").pop() || "Проект";
+}
+
+interface FamilyBadgeInfo {
+  label: string;
+  bg: string;
+  text: string;
+}
+
+function resolveModelFamilyBadge(agent?: AgentEntry["agent"]): FamilyBadgeInfo | null {
+  if (!agent) return null;
+  const p = (agent.provider || "").toLowerCase();
+  const m = (agent.model || "").toLowerCase();
+  const raw = `${p}/${m}`;
+
+  let family = "AI";
+  let specific = "";
+  let bg = "rgba(148, 163, 184, 0.16)";
+  let text = "#94A3B8";
+
+  if (raw.includes("claude") || raw.includes("opus") || raw.includes("sonnet") || raw.includes("haiku")) {
+    family = "Claude";
+    bg = "rgba(217, 119, 6, 0.16)";
+    text = "#F59E0B";
+    if (raw.includes("opus-5-5") || raw.includes("opus 5.5")) specific = "Opus 5.5";
+    else if (raw.includes("opus-5")) specific = "Opus 5";
+    else if (raw.includes("opus-4")) specific = "Opus 4";
+    else if (raw.includes("opus")) specific = "Opus";
+    else if (raw.includes("sonnet-5-5") || raw.includes("sonnet 5.5")) specific = "Sonnet 5.5";
+    else if (raw.includes("sonnet")) specific = "Sonnet";
+    else if (raw.includes("haiku-5-5") || raw.includes("haiku 5.5")) specific = "Haiku 5.5";
+    else if (raw.includes("haiku")) specific = "Haiku";
+    else if (raw.includes("fable")) specific = "Fable";
+  } else if (raw.includes("codex") || raw.includes("openai") || raw.includes("gpt")) {
+    family = "Codex";
+    bg = "rgba(16, 185, 129, 0.16)";
+    text = "#10B981";
+    if (raw.includes("6.1-sol") || raw.includes("6.1 sol")) specific = "6.1 Sol";
+    else if (raw.includes("6.1-terra") || raw.includes("6.1 terra")) specific = "6.1 Terra";
+    else if (raw.includes("6-sol")) specific = "6 Sol";
+    else if (raw.includes("6-luna")) specific = "6 Luna";
+    else if (raw.includes("6-astra")) specific = "6 Astra";
+    else if (raw.includes("5.6")) specific = "5.6";
+    else if (raw.includes("oss-120b")) specific = "OSS 120B";
+  } else if (raw.includes("gemini") || raw.includes("google") || raw.includes("antigravity")) {
+    family = "Gemini";
+    bg = "rgba(59, 130, 246, 0.16)";
+    text = "#3B82F6";
+    if (raw.includes("4-argon") || raw.includes("4 argon")) specific = "4 Argon";
+    else if (raw.includes("3.8-flash") || raw.includes("3.8 flash")) specific = "3.8 Flash";
+    else if (raw.includes("3.5-flash") || raw.includes("3.5 flash")) specific = "3.5 Flash";
+    else if (raw.includes("3.1-pro") || raw.includes("3.1 pro")) specific = "3.1 Pro";
+    else if (raw.includes("2.5-pro") || raw.includes("2.5 pro")) specific = "2.5 Pro";
+    else if (raw.includes("flash")) specific = "Flash";
+    else if (raw.includes("pro")) specific = "Pro";
+  } else if (raw.includes("deepseek")) {
+    family = "DeepSeek";
+    bg = "rgba(6, 182, 212, 0.16)";
+    text = "#06B6D4";
+    if (raw.includes("r1")) specific = "R1";
+    else if (raw.includes("v3")) specific = "V3";
+    else specific = "Chat";
+  } else if (raw.includes("kimi") || raw.includes("moonshot")) {
+    family = "Kimi";
+    bg = "rgba(139, 92, 246, 0.16)";
+    text = "#8B5CF6";
+    if (raw.includes("k3.1")) specific = "K3.1";
+    else if (raw.includes("k3")) specific = "K3";
+    else if (raw.includes("kimi-for-coding")) specific = "K2.8";
+    else specific = "Code";
+  } else if (raw.includes("copilot")) {
+    family = "Copilot";
+    bg = "rgba(100, 116, 139, 0.16)";
+    text = "#94A3B8";
+  } else if (agent.provider) {
+    const prefix = agent.provider.split("/")[0].replace(/^@/, "").trim();
+    if (prefix) {
+      family = prefix.charAt(0).toUpperCase() + prefix.slice(1);
+    }
+  }
+
+  const label = specific ? `${family} · ${specific}` : family;
+  return { label, bg, text };
+}
+
+function chatTitle(w: PaseoWorkspace, agent?: AgentEntry["agent"]): string {
+  const explicit = (w.title || "").trim();
+  if (explicit) return explicit;
+  const ag = agent as { title?: string | null; name?: string | null } | undefined;
+  const agTitle = (ag?.title || ag?.name || "").trim();
+  if (agTitle) return agTitle;
+  return "Новая сессия";
+}
+
+function deriveAgentBucket(entry: AgentEntry): UiSessionBucket {
+  const a = entry.agent;
+  if ((a.pendingPermissions?.length ?? 0) > 0 || a.attentionReason === "permission") {
+    return "needs_input";
+  }
+  if (a.status === "error" || a.attentionReason === "error") {
+    return "failed";
+  }
+  if (a.status === "running") {
+    return "running";
+  }
+  if (a.requiresAttention) {
+    return "attention";
+  }
+  return "done";
+}
+
+function resolveChatBucket(
+  w: PaseoWorkspace,
+  agentBucketByWorkspace: Record<string, UiSessionBucket>,
+): UiSessionBucket {
+  const fromWs: UiSessionBucket =
+    w.status === "needs_input"
+      ? "needs_input"
+      : w.status === "failed"
+        ? "failed"
+        : w.status === "running"
+          ? "running"
+          : "done";
+  const fromAgent = agentBucketByWorkspace[w.id];
+  if (!fromAgent) return fromWs;
+  return BUCKET_PRIORITY[fromAgent] < BUCKET_PRIORITY[fromWs] ? fromAgent : fromWs;
+}
+
+/**
+ * Время последнего running сессии:
+ * берется из серверного журнала хуков agent.turn.before/after, времени завершения/запроса агента,
+ * а для прямо сейчас работающих сессий - статус-таймштамп активного хода.
+ * Простой просмотр сессии это время не меняет.
+ */
+function chatLastRunningMs(
+  w: PaseoWorkspace,
+  bucket: UiSessionBucket,
+  lastRunningMap: Record<string, number>,
+  agentTurnFinishMap: Record<string, number>,
+): number {
+  const recordedRun = lastRunningMap[w.id] ?? 0;
+  const agentTurnEnd = agentTurnFinishMap[w.id] ?? 0;
+  const userPrompt = parseIsoMs(w.lastUserMessageAt);
+  const activity = parseIsoMs(w.activityAt);
+  const created = parseIsoMs(w.createdAt);
+  const liveRun =
+    bucket === "running" || bucket === "needs_input" ? parseIsoMs(w.statusEnteredAt) : 0;
+  return Math.max(recordedRun, agentTurnEnd, userPrompt, activity, liveRun, created);
+}
+
+/**
+ * Порядок сессий и проектов - только по последнему отправленному промпту.
+ * Ответы и работа агентов порядок не меняют, иначе раскрытые проекты скачут.
+ */
+function chatLastPromptMs(w: PaseoWorkspace, agentPromptMap: Record<string, number>): number {
+  // Сводное время рабочего пространства учитывает и служебный генератор названия,
+  // поэтому оно лишь запасное, когда агентов сессии нет в списке.
+  return agentPromptMap[w.id] || parseIsoMs(w.lastUserMessageAt) || parseIsoMs(w.createdAt);
+}
+
+function relativeTime(ms: number): string {
+  if (!ms) return "";
+  const diffMin = Math.max(0, Math.floor((Date.now() - ms) / 60000));
+  if (diffMin < 1) return "сейчас";
+  if (diffMin < 60) return `${diffMin} мин`;
+  const h = Math.floor(diffMin / 60);
+  if (h < 24) return `${h} ч`;
+  return `${Math.floor(h / 24)} д`;
+}
+
+function monogram(name: string): string {
+  const clean = name.trim();
+  if (!clean) return "P";
+  const parts = clean.split(/[\s_-]+/).filter(Boolean);
+  if (parts.length >= 2) {
+    return `${parts[0][0] ?? ""}${parts[1][0] ?? ""}`.toUpperCase();
+  }
+  return clean.slice(0, 2).toUpperCase();
+}
+
+function hashColor(id: string): string {
+  let h = 0;
+  for (let i = 0; i < id.length; i += 1) {
+    h = (h * 31 + id.charCodeAt(i)) | 0;
+  }
+  return COLOR_PRESETS[Math.abs(h) % COLOR_PRESETS.length] ?? "#3B82F6";
+}
+
+function pickWebImageAsDataUri(): Promise<string | null> {
+  return new Promise((resolve) => {
+    const g = globalThis as unknown as {
+      document?: {
+        createElement: (tag: string) => Record<string, unknown>;
+        body?: { appendChild: (el: unknown) => void; removeChild: (el: unknown) => void };
+      };
+      Image?: new () => {
+        onload: (() => void) | null;
+        onerror: (() => void) | null;
+        width: number;
+        height: number;
+        src: string;
+      };
+      FileReader?: new () => {
+        onload: (() => void) | null;
+        onerror: (() => void) | null;
+        result: unknown;
+        readAsDataURL: (blob: unknown) => void;
+      };
+    };
+    if (!g.document || !g.FileReader) {
+      resolve(null);
+      return;
+    }
+
+    const input = g.document.createElement("input") as {
+      type: string;
+      accept: string;
+      style: { display: string };
+      files?: ArrayLike<{ type?: string; size?: number }>;
+      onchange: (() => void) | null;
+      oncancel?: (() => void) | null;
+      click: () => void;
+    };
+    input.type = "file";
+    input.accept = "image/*";
+    input.style.display = "none";
+    g.document.body?.appendChild(input);
+
+    let settled = false;
+    const finish = (val: string | null) => {
+      if (settled) return;
+      settled = true;
+      try {
+        g.document?.body?.removeChild(input);
+      } catch {
+        // Ignore cleanup failure.
+      }
+      resolve(val);
+    };
+
+    input.oncancel = () => finish(null);
+    input.onchange = () => {
+      const file = input.files?.[0];
+      if (!file) {
+        finish(null);
+        return;
+      }
+      const reader = new g.FileReader!();
+      reader.onerror = () => finish(null);
+      reader.onload = () => {
+        const rawDataUri = typeof reader.result === "string" ? reader.result : null;
+        if (!rawDataUri) {
+          finish(null);
+          return;
+        }
+        if (file.type === "image/svg+xml" || file.type === "image/gif" || !g.Image) {
+          finish(rawDataUri);
+          return;
+        }
+        const img = new g.Image();
+        img.onerror = () => finish(rawDataUri);
+        img.onload = () => {
+          try {
+            const maxSide = 768;
+            const scale = Math.min(1, maxSide / Math.max(img.width || 1, img.height || 1));
+            const targetW = Math.max(1, Math.round(img.width * scale));
+            const targetH = Math.max(1, Math.round(img.height * scale));
+            const canvas = g.document!.createElement("canvas") as {
+              width: number;
+              height: number;
+              getContext: (kind: string) => { drawImage: (i: unknown, x: number, y: number, w: number, h: number) => void } | null;
+              toDataURL: (mime: string, quality?: number) => string;
+            };
+            canvas.width = targetW;
+            canvas.height = targetH;
+            const ctx = canvas.getContext("2d");
+            if (!ctx) {
+              finish(rawDataUri);
+              return;
+            }
+            ctx.drawImage(img, 0, 0, targetW, targetH);
+            const outMime = file.type === "image/jpeg" ? "image/jpeg" : "image/png";
+            finish(canvas.toDataURL(outMime, 0.9));
+          } catch {
+            finish(rawDataUri);
+          }
+        };
+        img.src = rawDataUri;
+      };
+      reader.readAsDataURL(file);
+    };
+
+    input.click();
+  });
+}
+
+function SessionStatusIndicator({
+  bucket,
+  theme,
+  platform,
+  size = 18,
+}: {
+  bucket: UiSessionBucket;
+  theme: PluginTheme;
+  platform: string;
+  size?: number;
+}) {
+  const spin = useRef(new Animated.Value(0)).current;
+  const c = theme.colors;
+
+  useEffect(() => {
+    if (bucket !== "running") {
+      spin.stopAnimation();
+      spin.setValue(0);
+      return;
+    }
+    spin.setValue(0);
+    const anim = Animated.loop(
+      Animated.timing(spin, {
+        toValue: 1,
+        duration: 900,
+        easing: Easing.linear,
+        useNativeDriver: platform !== "web",
+      }),
+    );
+    anim.start();
+    return () => anim.stop();
+  }, [bucket, platform, spin]);
+
+  if (bucket === "running") {
+    const rotate = spin.interpolate({
+      inputRange: [0, 1],
+      outputRange: ["0deg", "360deg"],
+    });
+    const dotSize = Math.max(5, Math.round(size * 0.36));
+    return (
+      <View
+        style={{
+          width: size,
+          height: size,
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <Animated.View
+          style={{
+            position: "absolute",
+            width: size,
+            height: size,
+            borderRadius: size / 2,
+            borderWidth: 1.8,
+            borderColor: "transparent",
+            borderTopColor: c.accent,
+            borderRightColor: c.accent,
+            transform: [{ rotate }],
+          }}
+        />
+        <View
+          style={{
+            width: dotSize,
+            height: dotSize,
+            borderRadius: dotSize / 2,
+            backgroundColor: c.accent,
+          }}
+        />
+      </View>
+    );
+  }
+
+  if (bucket === "attention") {
+    return (
+      <View style={{ width: size, height: size, alignItems: "center", justifyContent: "center" }}>
+        <Icon name="CircleCheck" size={size - 1} color={c.statusSuccess} />
+      </View>
+    );
+  }
+
+  if (bucket === "needs_input") {
+    return (
+      <View style={{ width: size, height: size, alignItems: "center", justifyContent: "center" }}>
+        <Icon name="CircleAlert" size={size - 1} color={c.statusWarning} />
+      </View>
+    );
+  }
+
+  if (bucket === "failed") {
+    return (
+      <View style={{ width: size, height: size, alignItems: "center", justifyContent: "center" }}>
+        <Icon name="CircleX" size={size - 1} color={c.statusDanger} />
+      </View>
+    );
+  }
+
+  const staticDot = Math.max(6, Math.round(size * 0.38));
+  return (
+    <View style={{ width: size, height: size, alignItems: "center", justifyContent: "center" }}>
+      <View
+        style={{
+          width: staticDot,
+          height: staticDot,
+          borderRadius: staticDot / 2,
+          backgroundColor: c.foregroundMuted,
+          opacity: 0.5,
+        }}
+      />
+    </View>
+  );
+}
+
+function ProjectAvatar({
+  name,
+  projectId,
+  avatarUri,
+  emoji,
+  bg,
+  size = 30,
+}: {
+  name: string;
+  projectId: string;
+  avatarUri: string | null;
+  emoji: string | null;
+  bg: string | null;
+  size?: number;
+}) {
+  const [imgFailed, setImgFailed] = useState(false);
+
+  useEffect(() => {
+    setImgFailed(false);
+  }, [avatarUri]);
+
+  const radius = Math.round(size * 0.28);
+
+  if (avatarUri && !imgFailed) {
+    return (
+      <Image
+        source={{ uri: avatarUri }}
+        resizeMode="cover"
+        onError={() => setImgFailed(true)}
+        style={{
+          width: size,
+          height: size,
+          borderRadius: radius,
+          backgroundColor: "rgba(128,128,128,0.12)",
+        }}
+      />
+    );
+  }
+
+  const fill = bg || hashColor(projectId);
+  return (
+    <View
+      style={{
+        width: size,
+        height: size,
+        borderRadius: radius,
+        backgroundColor: fill,
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      <Text
+        style={{
+          color: "#FFFFFF",
+          fontSize: emoji ? Math.round(size * 0.54) : Math.round(size * 0.38),
+          fontWeight: "700",
+        }}
+      >
+        {emoji || monogram(name)}
+      </Text>
+    </View>
+  );
+}
+
+function dispatchNativePress(element: HTMLElement) {
+  try {
+    const rect = element.getBoundingClientRect();
+    const clientX = rect.left + rect.width / 2;
+    const clientY = rect.top + rect.height / 2;
+    const opts: MouseEventInit = {
+      bubbles: true,
+      cancelable: true,
+      view: window,
+      clientX,
+      clientY,
+    };
+    element.dispatchEvent(
+      new PointerEvent("pointerdown", {
+        ...opts,
+        pointerId: 1,
+        pointerType: "mouse",
+        isPrimary: true,
+      }),
+    );
+    element.dispatchEvent(new MouseEvent("mousedown", opts));
+    element.dispatchEvent(
+      new PointerEvent("pointerup", {
+        ...opts,
+        pointerId: 1,
+        pointerType: "mouse",
+        isPrimary: true,
+      }),
+    );
+    element.dispatchEvent(new MouseEvent("mouseup", opts));
+    element.dispatchEvent(new MouseEvent("click", opts));
+  } catch {
+    // fallback
+  }
+  try {
+    element.click();
+  } catch {
+    // ignore
+  }
+}
+
+function openUsageLimits(serverId?: string) {
+  if (typeof document !== "undefined") {
+    // 1. Ищем строку сайдбара "Лимиты и расход" в DOM по testID Paseo
+    const targetEl =
+      document.querySelector<HTMLElement>('[data-testid="plugin-sidebar-usage-monitor-limits"]') ||
+      document.querySelector<HTMLElement>('[data-testid="plugin-sidebar-limits"]') ||
+      document.querySelector<HTMLElement>('[data-testid*="usage-monitor"][data-testid*="limits"]');
+
+    if (targetEl) {
+      dispatchNativePress(targetEl);
+      return;
+    }
+
+    // 2. Ищем элемент строки сайдбара по тексту
+    const candidates = Array.from(document.querySelectorAll<HTMLElement>("div, span, p, a, button"));
+    for (const el of candidates) {
+      if (el.children.length === 0 && el.textContent?.trim() === "Лимиты и расход") {
+        const pressable = el.closest<HTMLElement>('[role="button"], a, [tabindex]') || el;
+        dispatchNativePress(pressable);
+        return;
+      }
+    }
+  }
+
+  // 3. Fallback: роутер Expo Router через history pushState + popstate
+  if (typeof window !== "undefined") {
+    const effectiveHost =
+      serverId ||
+      /^\/h\/([^/]+)/.exec(window.location.pathname)?.[1] ||
+      "srv_9gLC3h4KJAzP";
+    const targetUrl = `/h/${encodeURIComponent(effectiveHost)}/plugin/paseo-hq/surface/limits`;
+
+    if (typeof document !== "undefined") {
+      const closeBtn = document.querySelector<HTMLElement>('[data-testid="sidebar-close-button"]');
+      if (closeBtn) {
+        dispatchNativePress(closeBtn);
+      }
+    }
+
+    try {
+      window.history.pushState(null, "", targetUrl);
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    } catch {
+      window.location.href = targetUrl;
+    }
+  }
+}
+
+function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover }: PluginSidebarItemProps) {
+  const paseo = usePaseo();
+  const toast = useToast();
+  const readSidebar = useRpc(sidebarReadRpc);
+  const saveProject = useRpc(projectSaveRpc);
+  const pinSession = useRpc(sessionPinRpc);
+  const suggestSessionTitle = useRpc(sessionTitleSuggestRpc);
+  const loadCandidates = useRpc(projectCandidatesRpc);
+  const addProjectRpc = useRpc(projectAddRpc);
+  const removeProject = useRpc(projectRemoveRpc);
+  const updatePanelSettings = useRpc(panelSettingsRpc);
+  const transferSession = useRpc(sessionTransferRpc);
+
+  const [projects, setProjects] = useState<PaseoProject[]>([]);
+  const [workspaces, setWorkspaces] = useState<PaseoWorkspace[]>([]);
+  const [agents, setAgents] = useState<AgentEntry[]>([]);
+  const [archivedIds, setArchivedIds] = useState<Record<string, boolean>>({});
+  const [serverState, setServerState] = useState<SidebarState>({
+    projects: {},
+    nativeIcons: {},
+    lastRunningAt: {},
+    pinnedSessions: {},
+    showHostMetrics: true,
+    showZorMetrics: true,
+    showWorkersMetrics: true,
+    headerTitle: "Штаб",
+  });
+
+  const [collapsed, setCollapsed] = useState(false);
+  const [panelSettingsOpen, setPanelSettingsOpen] = useState(false);
+  const [savingPanelSettings, setSavingPanelSettings] = useState(false);
+  const [draftHeaderTitle, setDraftHeaderTitle] = useState("Штаб");
+  const [expandedProjectIds, setExpandedProjectIds] = useState<Record<string, boolean>>({});
+  const [expandedAllChats, setExpandedAllChats] = useState<Record<string, boolean>>({});
+  const [showHiddenProjects, setShowHiddenProjects] = useState(false);
+  const [creatingId, setCreatingId] = useState<string | null>(null);
+
+  // Модалка добавления нового проекта
+  const [addModalOpen, setAddModalOpen] = useState(false);
+  const [addMode, setAddMode] = useState<AddProjectMode>("existing");
+  const [candidates, setCandidates] = useState<CandidateDir[]>([]);
+  const [candidateFilter, setCandidateFilter] = useState("");
+  const [manualPath, setManualPath] = useState("");
+  const [parentPath, setParentPath] = useState("~/repos");
+  const [newFolderName, setNewFolderName] = useState("");
+  const [cloneRepoUrl, setCloneRepoUrl] = useState("");
+  const [addCustomName, setAddCustomName] = useState("");
+  const [initGit, setInitGit] = useState(true);
+  const [addingProject, setAddingProject] = useState(false);
+
+  // Модалка настроек проекта
+  const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
+  const [draftProjectName, setDraftProjectName] = useState("");
+  const [draftAvatarUrl, setDraftAvatarUrl] = useState("");
+  const [draftAvatarUpdate, setDraftAvatarUpdate] = useState<AvatarUpdate>({ kind: "keep" });
+  const [draftNewMode, setDraftNewMode] = useState<"directory" | "worktree">("directory");
+  const [draftHidden, setDraftHidden] = useState(false);
+  const [draftTitleModel, setDraftTitleModel] = useState("first_line");
+  const [titleProviders, setTitleProviders] = useState<PaseoProviderSnapshotResult["entries"]>([]);
+  const [titleModelsError, setTitleModelsError] = useState<string | null>(null);
+  const [confirmRemoveProject, setConfirmRemoveProject] = useState(false);
+  const [savingProject, setSavingProject] = useState(false);
+
+  // Модалка настроек сессии
+  const [editingChatId, setEditingChatId] = useState<string | null>(null);
+  const [draftChatTitle, setDraftChatTitle] = useState("");
+  const [savingChat, setSavingChat] = useState(false);
+  const [suggestingTitle, setSuggestingTitle] = useState(false);
+  const [transferTargetProjectId, setTransferTargetProjectId] = useState<string>("");
+  const [transferArchiveOriginal, setTransferArchiveOriginal] = useState<boolean>(true);
+  const [transferIncludeHistory, setTransferIncludeHistory] = useState<boolean>(true);
+  const [transferringChat, setTransferringChat] = useState<boolean>(false);
+
+  const c = theme.colors;
+  const isWeb = layout.platform === "web" && typeof (globalThis as { document?: unknown }).document !== "undefined";
+  const btnSize = layout.compact ? 36 : 30;
+
+  const reloadAll = useCallback(async () => {
+    try {
+      const [projRes, wsRes, agRes] = await Promise.all([
+        paseo.projects.list({}),
+        paseo.workspaces.list({}),
+        paseo.agents.list({}).catch(() => ({ entries: [] as AgentEntry[] })),
+      ]);
+      const nextProjects = projRes.projects ?? [];
+      const nextWorkspaces = (wsRes.entries ?? []).filter((w) => !w.archivingAt && !w.background);
+      setProjects(nextProjects);
+      setWorkspaces(nextWorkspaces);
+      setAgents(agRes.entries ?? []);
+      const ids = Array.from(
+        new Set([
+          ...nextProjects.map((p) => p.projectId),
+          ...nextWorkspaces.map((w) => w.projectId),
+        ]),
+      );
+      const st = await readSidebar({ projectIds: ids });
+      setServerState(st);
+    } catch {
+      // Сохраняем прошлый снимок при временной сетевой ошибке.
+    }
+  }, [paseo, readSidebar]);
+
+  useEffect(() => {
+    void reloadAll();
+    const unsubWs = paseo.workspaces.subscribe(() => void reloadAll());
+    const unsubPrj = paseo.projects.subscribe(() => void reloadAll());
+    const unsubAg = paseo.agents.subscribe(() => void reloadAll());
+    const timer = setInterval(() => void reloadAll(), 5000);
+    return () => {
+      unsubWs();
+      unsubPrj();
+      unsubAg();
+      clearInterval(timer);
+    };
+  }, [paseo, reloadAll]);
+
+  const { agentBucketByWorkspace, agentTurnFinishMap, agentPromptMap, latestAgentByWorkspace } = useMemo(() => {
+    const bucketMap: Record<string, UiSessionBucket> = {};
+    const finishMap: Record<string, number> = {};
+    const agentMap: Record<string, AgentEntry["agent"]> = {};
+    const promptMap: Record<string, number> = {};
+    for (const entry of agents) {
+      if (entry.agent.archivedAt || entry.agent.internal) continue;
+      const wsId = entry.agent.workspaceId;
+      if (!wsId) continue;
+      const bucket = deriveAgentBucket(entry);
+      const prev = bucketMap[wsId];
+      if (!prev || BUCKET_PRIORITY[bucket] < BUCKET_PRIORITY[prev]) {
+        bucketMap[wsId] = bucket;
+      }
+      const attMs = parseIsoMs(entry.agent.attentionTimestamp);
+      const msgMs = parseIsoMs(entry.agent.lastUserMessageAt);
+      if (entry.agent.title !== GENERATOR_TITLE && msgMs > (promptMap[wsId] ?? 0)) promptMap[wsId] = msgMs;
+      const runMs = entry.agent.status === "running" ? parseIsoMs(entry.agent.updatedAt) : 0;
+      const bestTs = Math.max(attMs, msgMs, runMs);
+      if (bestTs > (finishMap[wsId] ?? 0)) {
+        finishMap[wsId] = bestTs;
+      }
+      const existing = agentMap[wsId];
+      if (!existing) {
+        agentMap[wsId] = entry.agent;
+      } else {
+        const existingTs = Math.max(
+          parseIsoMs(existing.attentionTimestamp),
+          parseIsoMs(existing.lastUserMessageAt),
+          existing.status === "running" ? parseIsoMs(existing.updatedAt) : 0,
+        );
+        if (bestTs >= existingTs) {
+          agentMap[wsId] = entry.agent;
+        }
+      }
+    }
+    return { agentBucketByWorkspace: bucketMap, agentTurnFinishMap: finishMap, agentPromptMap: promptMap, latestAgentByWorkspace: agentMap };
+  }, [agents]);
+
+  const agentsByWorkspace = useMemo(() => {
+    const map = new Map<string, AgentEntry[]>();
+    for (const entry of agents) {
+      if (entry.agent.archivedAt || entry.agent.internal) continue;
+      const wsId = entry.agent.workspaceId;
+      if (!wsId) continue;
+      const list = map.get(wsId) || [];
+      list.push(entry);
+      map.set(wsId, list);
+    }
+    return map;
+  }, [agents]);
+
+  const allGroups = useMemo<ProjectGroup[]>(() => {
+    const byProject = new Map<string, ProjectGroup>();
+
+    for (const p of projects) {
+      const meta = serverState.projects[p.projectId] ?? DEFAULT_META;
+      byProject.set(p.projectId, {
+        id: p.projectId,
+        name: projectTitle(p),
+        customName: p.projectCustomName ?? null,
+        displayName: p.projectDisplayName || p.projectRootPath.split("/").pop() || "Проект",
+        rootPath: p.projectRootPath,
+        meta,
+        resolvedAvatarUri: meta.avatarUri ?? serverState.nativeIcons[p.projectId] ?? null,
+        lastRunningAt: 0,
+        lastPromptAt: 0,
+        hasRunning: false,
+        summaryBucket: "done",
+        chats: [],
+      });
+    }
+
+    for (const w of workspaces) {
+      if (archivedIds[w.id]) continue;
+      let g = byProject.get(w.projectId);
+      if (!g) {
+        const meta = serverState.projects[w.projectId] ?? DEFAULT_META;
+        const fallbackName = w.projectCustomName || w.projectDisplayName || "Прочие";
+        g = {
+          id: w.projectId,
+          name: fallbackName,
+          customName: w.projectCustomName ?? null,
+          displayName: w.projectDisplayName || fallbackName,
+          rootPath: w.projectRootPath || w.workspaceDirectory,
+          meta,
+          resolvedAvatarUri: meta.avatarUri ?? serverState.nativeIcons[w.projectId] ?? null,
+          lastRunningAt: 0,
+          lastPromptAt: 0,
+          hasRunning: false,
+          summaryBucket: "done",
+          chats: [],
+        };
+        byProject.set(w.projectId, g);
+      }
+      g.chats.push(w);
+    }
+
+    const list = [...byProject.values()];
+    const pinnedMap = serverState.pinnedSessions;
+    const runningMap = serverState.lastRunningAt;
+
+    for (const g of list) {
+      let maxRun = 0;
+      let maxPrompt = 0;
+      let hasRunning = false;
+      let best: UiSessionBucket = "done";
+
+      for (const ch of g.chats) {
+        const b = resolveChatBucket(ch, agentBucketByWorkspace);
+        if (b === "running") hasRunning = true;
+        if (BUCKET_PRIORITY[b] < BUCKET_PRIORITY[best]) {
+          best = b;
+        }
+        const ts = chatLastRunningMs(ch, b, runningMap, agentTurnFinishMap);
+        if (ts > maxRun) maxRun = ts;
+        maxPrompt = Math.max(maxPrompt, chatLastPromptMs(ch, agentPromptMap));
+      }
+
+      // Сортировка сессий внутри проекта:
+      // 1) Закрепленные в нашем виджете всегда наверху
+      // 2) Остальные - по последнему отправленному промпту (свежие выше)
+      g.chats.sort((a, b) => {
+        const aPin = Boolean(pinnedMap[a.id]);
+        const bPin = Boolean(pinnedMap[b.id]);
+        if (aPin !== bPin) return aPin ? -1 : 1;
+
+        const aTs = chatLastPromptMs(a, agentPromptMap);
+        const bTs = chatLastPromptMs(b, agentPromptMap);
+        if (bTs !== aTs) return bTs - aTs;
+
+        return (pinnedMap[b.id] ?? 0) - (pinnedMap[a.id] ?? 0);
+      });
+
+      g.lastRunningAt = maxRun;
+      g.lastPromptAt = maxPrompt;
+      g.hasRunning = hasRunning;
+      g.summaryBucket = best;
+    }
+
+    // Проекты - по последнему промпту в любой их сессии, работа агентов не двигает
+    list.sort((a, b) => b.lastPromptAt - a.lastPromptAt || a.name.localeCompare(b.name, "ru"));
+
+    return list;
+  }, [projects, workspaces, archivedIds, serverState, agentBucketByWorkspace, agentTurnFinishMap, agentPromptMap]);
+
+  const hiddenCount = useMemo(() => allGroups.filter((g) => g.meta.hidden).length, [allGroups]);
+  const visibleGroups = useMemo(
+    () => (showHiddenProjects ? allGroups : allGroups.filter((g) => !g.meta.hidden)),
+    [allGroups, showHiddenProjects],
+  );
+
+  const isProjectOpen = useCallback(
+    (projectId: string, isFirst: boolean) => {
+      const explicit = expandedProjectIds[projectId];
+      if (explicit !== undefined) return explicit;
+      return isFirst;
+    },
+    [expandedProjectIds],
+  );
+
+  const toggleProjectOpen = useCallback((projectId: string, isFirst: boolean) => {
+    setExpandedProjectIds((prev) => {
+      const current = prev[projectId] !== undefined ? prev[projectId] : isFirst;
+      return { ...prev, [projectId]: !current };
+    });
+  }, []);
+
+  const editingGroup = useMemo(
+    () => (editingProjectId ? allGroups.find((g) => g.id === editingProjectId) ?? null : null),
+    [allGroups, editingProjectId],
+  );
+
+  const editingChat = useMemo(
+    () => (editingChatId ? workspaces.find((w) => w.id === editingChatId) ?? null : null),
+    [workspaces, editingChatId],
+  );
+
+  const editingChatPinned = editingChat ? Boolean(serverState.pinnedSessions[editingChat.id]) : false;
+
+  const currentProjectGroup = useMemo(
+    () => (editingChat ? allGroups.find((g) => g.id === editingChat.projectId) ?? null : null),
+    [allGroups, editingChat],
+  );
+
+  const availableTargetProjects = useMemo(
+    () => (editingChat ? allGroups.filter((g) => g.id !== editingChat.projectId) : []),
+    [allGroups, editingChat],
+  );
+
+  const filteredCandidates = useMemo(() => {
+    const q = candidateFilter.trim().toLowerCase();
+    if (!q) return candidates;
+    return candidates.filter(
+      (item) => item.name.toLowerCase().includes(q) || item.path.toLowerCase().includes(q),
+    );
+  }, [candidates, candidateFilter]);
+
+  const jumpToWorkspace = useCallback(
+    (workspaceId: string) => {
+      openScreen({ screenId: "jump", params: { jump: workspaceId, t: String(Date.now()) } });
+    },
+    [openScreen],
+  );
+
+  const createNewChat = async (group: ProjectGroup) => {
+    if (creatingId) return;
+    setCreatingId(group.id);
+    try {
+      const created = await paseo.workspaces.create({
+        source:
+          group.meta.newSessionMode === "worktree"
+            ? { kind: "worktree", cwd: group.rootPath, projectId: group.id }
+            : { kind: "directory", path: group.rootPath, projectId: group.id },
+      });
+      setExpandedProjectIds((prev) => ({ ...prev, [group.id]: true }));
+      jumpToWorkspace(created.id);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Не удалось создать сессию");
+    } finally {
+      setCreatingId(null);
+    }
+  };
+
+  const openAddProjectModal = async () => {
+    setAddMode("existing");
+    setCandidateFilter("");
+    setManualPath("");
+    setNewFolderName("");
+    setCloneRepoUrl("");
+    setAddCustomName("");
+    setInitGit(true);
+    setAddModalOpen(true);
+    try {
+      const res = await loadCandidates({ existingPaths: allGroups.map((g) => g.rootPath) });
+      setCandidates(res.items);
+      setParentPath(res.defaultParent);
+    } catch {
+      setCandidates([]);
+    }
+  };
+
+  const handleQuickAddCandidate = async (dir: CandidateDir) => {
+    if (addingProject) return;
+    setAddingProject(true);
+    try {
+      const res = await addProjectRpc({
+        mode: "existing",
+        path: dir.path,
+        customName: addCustomName.trim() || undefined,
+      });
+      await reloadAll();
+      setExpandedProjectIds((prev) => ({ ...prev, [res.projectId]: true }));
+      setCollapsed(false);
+      setAddModalOpen(false);
+      toast.show(`Проект ${dir.name} добавлен`, { variant: "success" });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Не удалось добавить проект");
+    } finally {
+      setAddingProject(false);
+    }
+  };
+
+  const handleSubmitAddProject = async () => {
+    if (addingProject) return;
+    setAddingProject(true);
+    try {
+      let res: { projectId: string; rootPath: string };
+      if (addMode === "existing") {
+        const p = manualPath.trim();
+        if (!p) {
+          throw new Error("Выберите папку из списка выше или введите путь на сервере");
+        }
+        res = await addProjectRpc({
+          mode: "existing",
+          path: p,
+          customName: addCustomName.trim() || undefined,
+        });
+      } else if (addMode === "create") {
+        const fname = newFolderName.trim();
+        if (!fname) {
+          throw new Error("Введите имя новой папки проекта");
+        }
+        res = await addProjectRpc({
+          mode: "create",
+          parentPath: parentPath.trim() || "~/repos",
+          folderName: fname,
+          customName: addCustomName.trim() || undefined,
+          initGit,
+        });
+      } else {
+        const repo = cloneRepoUrl.trim();
+        if (!repo) {
+          throw new Error("Введите ссылку на Git-репозиторий");
+        }
+        res = await addProjectRpc({
+          mode: "clone",
+          repoUrl: repo,
+          parentPath: parentPath.trim() || "~/repos",
+          folderName: newFolderName.trim() || undefined,
+          customName: addCustomName.trim() || undefined,
+        });
+      }
+      await reloadAll();
+      setExpandedProjectIds((prev) => ({ ...prev, [res.projectId]: true }));
+      setCollapsed(false);
+      setAddModalOpen(false);
+      toast.show("Проект добавлен", { variant: "success" });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Не удалось добавить проект");
+    } finally {
+      setAddingProject(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!editingProjectId) return;
+    let cancelled = false;
+    setTitleModelsError(null);
+    void paseo.providers.waitForReady({ cwd: editingGroup?.rootPath }).then(snapshot => {
+      if (!cancelled) setTitleProviders(snapshot.entries);
+    }).catch(error => {
+      if (!cancelled) setTitleModelsError(error instanceof Error ? error.message : "Каталог моделей недоступен");
+    });
+    return () => { cancelled = true; };
+  }, [editingProjectId, editingGroup?.rootPath, paseo]);
+
+  const openProjectSettings = (group: ProjectGroup) => {
+    setEditingProjectId(group.id);
+    setDraftProjectName(group.customName ?? group.name);
+    setDraftAvatarUrl("");
+    setDraftAvatarUpdate({ kind: "keep" });
+    setDraftNewMode(group.meta.newSessionMode);
+    setDraftHidden(group.meta.hidden);
+    setDraftTitleModel(group.meta.sessionTitleModel ?? "first_line");
+    setConfirmRemoveProject(false);
+  };
+
+  const handlePickWebFile = async () => {
+    const uri = await pickWebImageAsDataUri();
+    if (uri) {
+      setDraftAvatarUpdate({ kind: "dataUri", dataUri: uri });
+      setDraftAvatarUrl("");
+    }
+  };
+
+  const handleSaveProjectSettings = async () => {
+    if (!editingGroup || savingProject) return;
+    setSavingProject(true);
+    try {
+      const trimmedUrl = draftAvatarUrl.trim();
+      const avatarPayload: AvatarUpdate = trimmedUrl
+        ? { kind: "urlOrPath", value: trimmedUrl }
+        : draftAvatarUpdate;
+      const trimmedName = draftProjectName.trim();
+      const folderName = editingGroup.rootPath.split("/").pop() || "";
+      const customName =
+        trimmedName === "" || trimmedName === folderName ? null : trimmedName;
+      const nameChanged = customName !== (editingGroup.customName ?? null);
+
+      const updated = await saveProject({
+        projectId: editingGroup.id,
+        customName: nameChanged ? customName : undefined,
+        avatar: avatarPayload,
+        newSessionMode: draftNewMode,
+        hidden: draftHidden,
+        sessionTitleModel: draftTitleModel === "first_line" ? null : draftTitleModel,
+      });
+      setServerState((prev) => ({
+        projects: updated.projects,
+        nativeIcons: { ...prev.nativeIcons, ...updated.nativeIcons },
+        lastRunningAt: updated.lastRunningAt,
+        pinnedSessions: updated.pinnedSessions,
+        showHostMetrics: updated.showHostMetrics,
+        showZorMetrics: updated.showZorMetrics,
+        showWorkersMetrics: updated.showWorkersMetrics ?? updated.showZorMetrics,
+        headerTitle: updated.headerTitle,
+      }));
+      await reloadAll();
+      setEditingProjectId(null);
+      toast.show("Настройки проекта сохранены", { variant: "success" });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Не удалось сохранить настройки проекта");
+    } finally {
+      setSavingProject(false);
+    }
+  };
+
+  const openPanelSettings = () => {
+    setDraftHeaderTitle(serverState.headerTitle || "Штаб");
+    setPanelSettingsOpen(true);
+  };
+
+  const handleSaveHeaderTitle = async () => {
+    if (savingPanelSettings) return;
+    const nextTitle = draftHeaderTitle.trim() || "Штаб";
+    setSavingPanelSettings(true);
+    setServerState((prev) => ({ ...prev, headerTitle: nextTitle }));
+    try {
+      const updated = await updatePanelSettings({
+        headerTitle: nextTitle,
+        projectIds: allGroups.map((g) => g.id),
+      });
+      setServerState(updated);
+      toast.show("Название вкладки обновлено", { variant: "success" });
+    } catch (err) {
+      await reloadAll();
+      toast.error(err instanceof Error ? err.message : "Не удалось сохранить название вкладки");
+    } finally {
+      setSavingPanelSettings(false);
+    }
+  };
+
+  const handleToggleZorMetrics = async (enabled: boolean) => {
+    if (savingPanelSettings) return;
+    setSavingPanelSettings(true);
+    setServerState((prev) => ({ ...prev, showZorMetrics: enabled }));
+    try {
+      const updated = await updatePanelSettings({
+        showZorMetrics: enabled,
+        projectIds: allGroups.map((g) => g.id),
+      });
+      setServerState(updated);
+      toast.show(
+        enabled ? "Показатели работников включены" : "Показатели работников скрыты",
+        { variant: "info" },
+      );
+    } catch (err) {
+      await reloadAll();
+      toast.error(err instanceof Error ? err.message : "Не удалось обновить настройки работников");
+    } finally {
+      setSavingPanelSettings(false);
+    }
+  };
+
+  const handleToggleHostMetrics = async (enabled: boolean) => {
+    if (savingPanelSettings) return;
+    setSavingPanelSettings(true);
+    setServerState((prev) => ({ ...prev, showHostMetrics: enabled }));
+    try {
+      const updated = await updatePanelSettings({
+        showHostMetrics: enabled,
+        projectIds: allGroups.map((g) => g.id),
+      });
+      setServerState(updated);
+      toast.show(
+        enabled ? "Мониторинг сервера включен" : "Мониторинг сервера отключен (фоновый опрос остановлен)",
+        { variant: "info" },
+      );
+    } catch (err) {
+      await reloadAll();
+      toast.error(err instanceof Error ? err.message : "Не удалось обновить настройки панели");
+    } finally {
+      setSavingPanelSettings(false);
+    }
+  };
+
+  const handleRemoveProject = async () => {
+    if (!editingGroup || savingProject) return;
+    if (!confirmRemoveProject) {
+      setConfirmRemoveProject(true);
+      return;
+    }
+    setSavingProject(true);
+    try {
+      await removeProject({ projectId: editingGroup.id });
+      setEditingProjectId(null);
+      setConfirmRemoveProject(false);
+      await reloadAll();
+      toast.show("Проект убран из списка Paseo", { variant: "info" });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Не удалось убрать проект");
+    } finally {
+      setSavingProject(false);
+    }
+  };
+
+  const openChatSettings = (chat: PaseoWorkspace) => {
+    setEditingChatId(chat.id);
+    const agent = latestAgentByWorkspace[chat.id];
+    setDraftChatTitle(chatTitle(chat, agent));
+    const others = allGroups.filter((g) => g.id !== chat.projectId);
+    setTransferTargetProjectId(others[0]?.id || "");
+    setTransferArchiveOriginal(true);
+    setTransferIncludeHistory(true);
+    setTransferringChat(false);
+  };
+
+  const handleTransferChat = async () => {
+    if (!editingChat || transferringChat || !transferTargetProjectId) return;
+    setTransferringChat(true);
+    const targetGroup = allGroups.find((g) => g.id === transferTargetProjectId);
+    const targetName = targetGroup ? (targetGroup.customName || targetGroup.name) : "новый проект";
+    try {
+      const res = await transferSession({
+        workspaceId: editingChat.id,
+        targetProjectId: transferTargetProjectId,
+        archiveOriginal: transferArchiveOriginal,
+        includeHistory: transferIncludeHistory,
+      });
+      setExpandedProjectIds((prev) => ({ ...prev, [res.targetProjectId]: true }));
+      setEditingChatId(null);
+      await reloadAll();
+      toast.show(`Сессия перенесена в проект "${targetName}"`, { variant: "success" });
+      jumpToWorkspace(res.newWorkspaceId);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Не удалось перенести сессию");
+    } finally {
+      setTransferringChat(false);
+    }
+  };
+
+  const handleRenameChat = async () => {
+    if (!editingChat || savingChat) return;
+    setSavingChat(true);
+    try {
+      const nextTitle = draftChatTitle.trim() || null;
+      await paseo.workspaces.ref(editingChat.id).setTitle(nextTitle);
+      await reloadAll();
+      setEditingChatId(null);
+      toast.show("Название сессии обновлено", { variant: "success" });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Не удалось переименовать сессию");
+    } finally {
+      setSavingChat(false);
+    }
+  };
+
+  // Предлагает название моделью проекта по последнему промпту и ответу; сохраняет Руслан.
+  const handleSuggestTitle = async () => {
+    const agent = editingChat ? latestAgentByWorkspace[editingChat.id] : undefined;
+    if (!editingChat || !agent || suggestingTitle) return;
+    setSuggestingTitle(true);
+    try {
+      const { title } = await suggestSessionTitle({ workspaceId: editingChat.id, agentId: agent.id, projectId: editingChat.projectId });
+      setDraftChatTitle(title);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Не удалось сгенерировать название");
+    } finally {
+      setSuggestingTitle(false);
+    }
+  };
+
+  const handleTogglePinChat = async () => {
+    if (!editingChat || savingChat) return;
+    const chatId = editingChat.id;
+    const nextPinned = !serverState.pinnedSessions[chatId];
+    setSavingChat(true);
+    // Мгновенный локальный отклик закрепления в виджете
+    setServerState((prev) => {
+      const nextMap = { ...prev.pinnedSessions };
+      if (nextPinned) {
+        nextMap[chatId] = Date.now();
+      } else {
+        delete nextMap[chatId];
+      }
+      return { ...prev, pinnedSessions: nextMap };
+    });
+    try {
+      const updated = await pinSession({
+        workspaceId: chatId,
+        pinned: nextPinned,
+        projectIds: allGroups.map((g) => g.id),
+      });
+      setServerState(updated);
+      setEditingChatId(null);
+      toast.show(nextPinned ? "Сессия закреплена наверху" : "Сессия откреплена", { variant: "info" });
+    } catch (err) {
+      await reloadAll();
+      toast.error(err instanceof Error ? err.message : "Не удалось изменить закрепление");
+    } finally {
+      setSavingChat(false);
+    }
+  };
+
+  const handleArchiveChat = async (chat: PaseoWorkspace) => {
+    if (savingChat) return;
+    setSavingChat(true);
+    try {
+      setArchivedIds((prev) => ({ ...prev, [chat.id]: true }));
+      await paseo.workspaces.archive(chat.id);
+      if (editingChatId === chat.id) {
+        setEditingChatId(null);
+      }
+      toast.show("Сессия отправлена в архив", { variant: "success" });
+      void reloadAll();
+    } catch (err) {
+      setArchivedIds((prev) => {
+        const copy = { ...prev };
+        delete copy[chat.id];
+        return copy;
+      });
+      toast.error(err instanceof Error ? err.message : "Не удалось архивировать сессию");
+    } finally {
+      setSavingChat(false);
+    }
+  };
+
+  const previewAvatar = useMemo(() => {
+    if (!editingGroup) return { uri: null, emoji: null, bg: null };
+    if (draftAvatarUrl.trim().startsWith("http") || draftAvatarUrl.trim().startsWith("data:image/")) {
+      return { uri: draftAvatarUrl.trim(), emoji: null, bg: null };
+    }
+    if (draftAvatarUpdate.kind === "none") {
+      return { uri: null, emoji: null, bg: null };
+    }
+    if (draftAvatarUpdate.kind === "emoji") {
+      return { uri: null, emoji: draftAvatarUpdate.emoji, bg: draftAvatarUpdate.bg };
+    }
+    if (draftAvatarUpdate.kind === "dataUri") {
+      return { uri: draftAvatarUpdate.dataUri, emoji: null, bg: null };
+    }
+    return {
+      uri: editingGroup.resolvedAvatarUri,
+      emoji: editingGroup.meta.avatarEmoji,
+      bg: editingGroup.meta.avatarBg,
+    };
+  }, [editingGroup, draftAvatarUpdate, draftAvatarUrl]);
+
+  const { height: windowHeight } = useWindowDimensions();
+  const headerMetricsHeight = useMemo(() => {
+    let h = layout.compact ? 52 : 46;
+    if (serverState.showHostMetrics) h += 40;
+    if (serverState.showZorMetrics) h += 40;
+    const chromeAndSafeArea = layout.compact ? 90 : 80;
+    return h + chromeAndSafeArea;
+  }, [layout.compact, serverState.showHostMetrics, serverState.showZorMetrics]);
+
+  const listMaxHeight = Math.max(200, windowHeight - headerMetricsHeight);
+
+  // В Electron шапка сайдбара Paseo лежит в зоне перетаскивания окна (-webkit-app-region: drag).
+  // Кнопки там no-drag, а фон и промежутки списка - нет, и на macOS колесо и трекпад над ними
+  // уходят окну, а не ScrollView. Снимаем зону перетаскивания со всей панели.
+  const rootRef = useRef<View>(null);
+  useEffect(() => {
+    if (!isWeb) return;
+    const node = rootRef.current as unknown as HTMLElement | null;
+    node?.style?.setProperty("-webkit-app-region", "no-drag", "important");
+  }, [isWeb]);
+
+  // На вебе и в Electron оценка от высоты окна врет: под шапкой у Paseo подвал сайдбара
+  // с плагинными строками, его высота зависит от режима окна и настроек. Если список
+  // влезает в оценку, но не в реальное место, ScrollView не крутится, а низ режет родитель.
+  // Поэтому меряем место от верха списка до подвала сайдбара.
+  const listRef = useRef<ScrollView>(null);
+  const [measuredMaxHeight, setMeasuredMaxHeight] = useState<number | null>(null);
+  useEffect(() => {
+    if (!isWeb || collapsed) return;
+    const listNode = listRef.current?.getScrollableNode?.() as HTMLElement | undefined;
+    if (!listNode) return;
+    let sidebar: HTMLElement | null = listNode.parentElement;
+    while (sidebar && !sidebar.querySelector('[data-testid="sidebar-footer"]')) {
+      sidebar = sidebar.parentElement;
+    }
+    const footer = sidebar?.querySelector<HTMLElement>('[data-testid="sidebar-footer"]') ?? null;
+    let frame = 0;
+    const measure = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const sidebarBottom = sidebar
+          ? Math.min(sidebar.getBoundingClientRect().bottom, window.innerHeight)
+          : window.innerHeight;
+        const bottom = sidebarBottom - (footer?.offsetHeight ?? 0);
+        const next = Math.max(120, Math.floor(bottom - listNode.getBoundingClientRect().top - 8));
+        setMeasuredMaxHeight((prev) => (prev !== null && Math.abs(prev - next) < 2 ? prev : next));
+      });
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
+    if (footer) observer?.observe(footer);
+    if (sidebar) observer?.observe(sidebar);
+    const root = rootRef.current as unknown as HTMLElement | null;
+    if (root) observer?.observe(root);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener("resize", measure);
+      observer?.disconnect();
+    };
+  }, [isWeb, collapsed]);
+
+  return (
+    <View ref={rootRef} style={{ marginVertical: 4, paddingHorizontal: 10, gap: 8 }}>
+      {/* Полноразмерный заголовок Проекты + кнопка настроек панели + кнопка добавления нового проекта */}
+      {/* Строка 1: Заголовок «Штаб» с кнопкой сворачивания */}
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "space-between",
+          paddingHorizontal: 2,
+          paddingVertical: 2,
+        }}
+      >
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => setCollapsed((v) => !v)}
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 6,
+            paddingVertical: 3,
+          }}
+        >
+          <Icon name={collapsed ? "ChevronRight" : "ChevronDown"} size={16} color={c.foreground} />
+          <Text numberOfLines={1} ellipsizeMode="tail" style={{ color: c.foreground, fontSize: 15, fontWeight: "700" }}>
+            {serverState.headerTitle || "Штаб"}
+          </Text>
+        </Pressable>
+      </View>
+
+      {/* Строка 2: Панель кнопок-иконок на строку ниже */}
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          gap: layout.compact ? 5 : 6,
+          paddingHorizontal: 2,
+          paddingBottom: 2,
+        }}
+      >
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Лимиты и расход"
+          onPress={() => {
+            try {
+              openScreen({ screenId: "limits" });
+            } catch {
+              openUsageLimits(host?.id);
+            }
+          }}
+          style={({ pressed }) => ({
+            flex: 1,
+            height: layout.compact ? 34 : 28,
+            borderRadius: 8,
+            alignItems: "center",
+            justifyContent: "center",
+            backgroundColor: c.surface2,
+            borderWidth: 1,
+            borderColor: c.border,
+            opacity: pressed ? 0.75 : 1,
+          })}
+        >
+          <Icon name="Gauge" size={14} color={c.foregroundMuted} />
+        </Pressable>
+
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Репозитории Git"
+          onPress={() => {
+            openScreen({ screenId: "git-workspace" });
+          }}
+          style={({ pressed }) => ({
+            flex: 1,
+            height: layout.compact ? 34 : 28,
+            borderRadius: 8,
+            alignItems: "center",
+            justifyContent: "center",
+            backgroundColor: c.surface2,
+            borderWidth: 1,
+            borderColor: c.border,
+            opacity: pressed ? 0.75 : 1,
+          })}
+        >
+          <Icon name="FolderGit2" size={14} color={c.foregroundMuted} />
+        </Pressable>
+
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Службы"
+          onPress={() => {
+            openScreen({ screenId: "services" });
+          }}
+          style={({ pressed }) => ({
+            flex: 1,
+            height: layout.compact ? 34 : 28,
+            borderRadius: 8,
+            alignItems: "center",
+            justifyContent: "center",
+            backgroundColor: c.surface2,
+            borderWidth: 1,
+            borderColor: c.border,
+            opacity: pressed ? 0.75 : 1,
+          })}
+        >
+          <Icon name="Server" size={14} color={c.foregroundMuted} />
+        </Pressable>
+
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Артефакты"
+          onPress={() => {
+            openScreen({ screenId: "artifacts" });
+          }}
+          style={({ pressed }) => ({
+            flex: 1,
+            height: layout.compact ? 34 : 28,
+            borderRadius: 8,
+            alignItems: "center",
+            justifyContent: "center",
+            backgroundColor: c.surface2,
+            borderWidth: 1,
+            borderColor: c.border,
+            opacity: pressed ? 0.75 : 1,
+          })}
+        >
+          <Icon name="Layers" size={14} color={c.foregroundMuted} />
+        </Pressable>
+
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Работники и команда"
+          onPress={() => {
+            openScreen({ screenId: "workers" });
+          }}
+          style={({ pressed }) => ({
+            flex: 1,
+            height: layout.compact ? 34 : 28,
+            borderRadius: 8,
+            alignItems: "center",
+            justifyContent: "center",
+            backgroundColor: c.surface2,
+            borderWidth: 1,
+            borderColor: c.border,
+            opacity: pressed ? 0.75 : 1,
+          })}
+        >
+          <Icon name="Users" size={14} color={c.foregroundMuted} />
+        </Pressable>
+
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Настройки штаба"
+          onPress={openPanelSettings}
+          style={({ pressed }) => ({
+            flex: 1,
+            height: layout.compact ? 34 : 28,
+            borderRadius: 8,
+            alignItems: "center",
+            justifyContent: "center",
+            backgroundColor: c.surface2,
+            borderWidth: 1,
+            borderColor: c.border,
+            opacity: pressed ? 0.75 : 1,
+          })}
+        >
+          <Icon name="SlidersHorizontal" size={14} color={c.foregroundMuted} />
+        </Pressable>
+
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Добавить проект"
+          onPress={() => void openAddProjectModal()}
+          style={({ pressed }) => ({
+            flex: 1,
+            height: layout.compact ? 34 : 28,
+            borderRadius: 8,
+            alignItems: "center",
+            justifyContent: "center",
+            backgroundColor: c.surface2,
+            borderWidth: 1,
+            borderColor: c.border,
+            opacity: pressed ? 0.75 : 1,
+          })}
+        >
+          <Icon name="FolderPlus" size={15} color={c.accent} />
+        </Pressable>
+      </View>
+
+      {/* Компактная полоска нагрузки хоста (CPU, ОЗУ, сеть, диск) с всплывающей шторкой */}
+      {serverState.showHostMetrics ? (
+        <HostMetricsBar
+          theme={theme}
+          openPopover={openPopover}
+          enabled={serverState.showHostMetrics}
+        />
+      ) : null}
+
+      {/* Компактная полоска ресурсов и активности работников команды */}
+      {serverState.showZorMetrics ? (
+        <WorkersMetricsBar
+          theme={theme}
+          openPopover={openPopover}
+          enabled={serverState.showZorMetrics}
+        />
+      ) : null}
+
+      {/* Раскрывающийся список проектов и сессий */}
+      {!collapsed ? (
+        <ScrollView
+          ref={listRef}
+          style={{
+            maxHeight: measuredMaxHeight ?? listMaxHeight,
+          }}
+          contentContainerStyle={{
+            gap: 7,
+            // На телефоне низ списка уходит под подвал сайдбара и home indicator
+            paddingBottom: layout.compact ? 120 : 24,
+          }}
+          nestedScrollEnabled={true}
+          showsVerticalScrollIndicator={true}
+          keyboardShouldPersistTaps="handled"
+        >
+          {visibleGroups.map((group, idx) => {
+            const isOpen = isProjectOpen(group.id, idx === 0);
+            const busy = creatingId === group.id;
+            const showAll = Boolean(expandedAllChats[group.id]);
+            const displayedChats = showAll ? group.chats : group.chats.slice(0, 8);
+            const moreCount = group.chats.length - displayedChats.length;
+
+            return (
+              <View
+                key={group.id}
+                style={{
+                  borderRadius: 11,
+                  backgroundColor: c.surface1,
+                  borderWidth: 1,
+                  borderColor: isOpen ? c.accent : c.border,
+                  overflow: "hidden",
+                  opacity: group.meta.hidden ? 0.65 : 1,
+                }}
+              >
+                {/* Строка проекта: аватарка + название + настройки рядом с плюсом */}
+                <View
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    paddingLeft: 10,
+                    paddingRight: 8,
+                    paddingVertical: 8,
+                    gap: 8,
+                  }}
+                >
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => toggleProjectOpen(group.id, idx === 0)}
+                    style={{
+                      flex: 1,
+                      flexDirection: "row",
+                      alignItems: "center",
+                      gap: 10,
+                      paddingVertical: 2,
+                      minWidth: 0,
+                    }}
+                  >
+                    <ProjectAvatar
+                      name={group.name}
+                      projectId={group.id}
+                      avatarUri={group.resolvedAvatarUri}
+                      emoji={group.meta.avatarEmoji}
+                      bg={group.meta.avatarBg}
+                      size={32}
+                    />
+                    <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                        <Text numberOfLines={1} style={{ flexShrink: 1, color: c.foreground, fontSize: 14, fontWeight: "600" }}>
+                          {group.name}
+                        </Text>
+                        {!isOpen && group.summaryBucket !== "done" ? (
+                          <SessionStatusIndicator
+                            bucket={group.summaryBucket}
+                            theme={theme}
+                            platform={layout.platform}
+                            size={15}
+                          />
+                        ) : null}
+                      </View>
+                      <Text numberOfLines={1} style={{ color: c.foregroundMuted, fontSize: 11 }}>
+                        {group.chats.length === 0
+                          ? "нет активных сессий"
+                          : `${group.chats.length} сесс.${
+                              group.hasRunning
+                                ? " · в работе"
+                                : group.lastRunningAt
+                                  ? ` · ${relativeTime(group.lastRunningAt)}`
+                                  : ""
+                            }`}
+                      </Text>
+                    </View>
+                  </Pressable>
+
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`Настройки проекта ${group.name}`}
+                    hitSlop={4}
+                    onPress={() => openProjectSettings(group)}
+                    style={({ pressed }) => ({
+                      width: btnSize,
+                      height: btnSize,
+                      borderRadius: 9,
+                      alignItems: "center",
+                      justifyContent: "center",
+                      backgroundColor: c.surface2,
+                      borderWidth: 1,
+                      borderColor: c.border,
+                      opacity: pressed ? 0.7 : 1,
+                    })}
+                  >
+                    <Icon name="SlidersHorizontal" size={15} color={c.foregroundMuted} />
+                  </Pressable>
+
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`Новая сессия в проекте ${group.name}`}
+                    disabled={busy}
+                    onPress={() => void createNewChat(group)}
+                    style={({ pressed }) => ({
+                      width: btnSize,
+                      height: btnSize,
+                      borderRadius: 9,
+                      alignItems: "center",
+                      justifyContent: "center",
+                      backgroundColor: c.accent,
+                      opacity: busy ? 0.5 : pressed ? 0.8 : 1,
+                    })}
+                  >
+                    <Icon name="Plus" size={18} color="#FFFFFF" />
+                  </Pressable>
+                </View>
+
+                {/* Укрупненные строки сессий внутри раскрытого проекта */}
+                {isOpen && group.chats.length > 0 ? (
+                  <View
+                    style={{
+                      borderTopWidth: 1,
+                      borderTopColor: c.border,
+                      paddingVertical: 6,
+                      paddingHorizontal: 7,
+                      gap: 4,
+                    }}
+                  >
+                    {displayedChats.map((chat) => {
+                      const bucket = resolveChatBucket(chat, agentBucketByWorkspace);
+                      const isPinned = Boolean(serverState.pinnedSessions[chat.id]);
+                      const lastRunMs = chatLastRunningMs(
+                        chat,
+                        bucket,
+                        serverState.lastRunningAt,
+                        agentTurnFinishMap,
+                      );
+                      const highlighted =
+                        isPinned || bucket === "running" || bucket === "attention" || bucket === "needs_input";
+                      const agent = latestAgentByWorkspace[chat.id];
+                      const family = resolveModelFamilyBadge(agent);
+                      const title = chatTitle(chat, agent);
+
+                      return (
+                        <View
+                          key={chat.id}
+                          style={{
+                            flexDirection: "row",
+                            alignItems: "center",
+                            borderRadius: 9,
+                            gap: 2,
+                          }}
+                        >
+                          <Pressable
+                            accessibilityRole="button"
+                            onPress={() => jumpToWorkspace(chat.id)}
+                            style={({ pressed }) => ({
+                              flex: 1,
+                              minWidth: 0,
+                              flexDirection: "row",
+                              alignItems: "center",
+                              gap: 8,
+                              paddingVertical: layout.compact ? 11 : 9,
+                              paddingLeft: 9,
+                              paddingRight: 8,
+                              borderRadius: 9,
+                              backgroundColor: pressed ? c.surface2 : undefined,
+                            })}
+                          >
+                            <SessionStatusIndicator
+                              bucket={bucket}
+                              theme={theme}
+                              platform={layout.platform}
+                              size={18}
+                            />
+                            <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
+                              <Text
+                                numberOfLines={1}
+                                style={{
+                                  color: c.foreground,
+                                  fontSize: 14,
+                                  lineHeight: 19,
+                                  fontWeight: highlighted ? "600" : "400",
+                                }}
+                              >
+                                {title}
+                              </Text>
+                              <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                                {family ? (
+                                  <View
+                                    style={{
+                                      paddingHorizontal: 5,
+                                      paddingVertical: 1,
+                                      borderRadius: 4,
+                                      backgroundColor: family.bg,
+                                    }}
+                                  >
+                                    <Text
+                                      style={{
+                                        fontSize: 10,
+                                        fontWeight: "600",
+                                        color: family.text,
+                                        letterSpacing: 0.2,
+                                      }}
+                                    >
+                                      {family.label}
+                                    </Text>
+                                  </View>
+                                ) : null}
+                                <Text style={{ color: c.foregroundMuted, fontSize: 11 }}>
+                                  {bucket === "running" ? "сейчас" : relativeTime(lastRunMs)}
+                                </Text>
+                                {agentsByWorkspace.get(chat.id) && agentsByWorkspace.get(chat.id)!.length > 1 ? (
+                                  <View
+                                    style={{
+                                      paddingHorizontal: 4,
+                                      paddingVertical: 1,
+                                      borderRadius: 3,
+                                      backgroundColor: c.surface2,
+                                      borderWidth: 1,
+                                      borderColor: c.border,
+                                    }}
+                                  >
+                                    <Text style={{ fontSize: 9.5, fontWeight: "600", color: c.foregroundMuted }}>
+                                      {`${agentsByWorkspace.get(chat.id)!.length} чата`}
+                                    </Text>
+                                  </View>
+                                ) : null}
+                              </View>
+                            </View>
+                            {isPinned ? (
+                              <Icon name="Pin" size={13} color={c.accent} />
+                            ) : null}
+                          </Pressable>
+
+                          <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel={`Настройки сессии ${title}`}
+                            hitSlop={6}
+                            onPress={() => openChatSettings(chat)}
+                            style={({ pressed }) => ({
+                              width: layout.compact ? 34 : 30,
+                              height: layout.compact ? 34 : 30,
+                              borderRadius: 8,
+                              alignItems: "center",
+                              justifyContent: "center",
+                              backgroundColor: pressed ? c.surface2 : undefined,
+                            })}
+                          >
+                            <Icon name="MoreHorizontal" size={16} color={c.foregroundMuted} />
+                          </Pressable>
+                        </View>
+                      );
+                    })}
+
+                    {moreCount > 0 ? (
+                      <Pressable
+                        accessibilityRole="button"
+                        onPress={() =>
+                          setExpandedAllChats((prev) => ({ ...prev, [group.id]: true }))
+                        }
+                        style={{ paddingVertical: 7, paddingHorizontal: 8, alignItems: "center" }}
+                      >
+                        <Text style={{ color: c.accent, fontSize: 13, fontWeight: "600" }}>
+                          Показать еще {moreCount}
+                        </Text>
+                      </Pressable>
+                    ) : showAll && group.chats.length > 8 ? (
+                      <Pressable
+                        accessibilityRole="button"
+                        onPress={() =>
+                          setExpandedAllChats((prev) => ({ ...prev, [group.id]: false }))
+                        }
+                        style={{ paddingVertical: 7, paddingHorizontal: 8, alignItems: "center" }}
+                      >
+                        <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>Свернуть список</Text>
+                      </Pressable>
+                    ) : null}
+                  </View>
+                ) : null}
+              </View>
+            );
+          })}
+
+          {hiddenCount > 0 ? (
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => setShowHiddenProjects((v) => !v)}
+              style={{ paddingVertical: 5, alignItems: "center" }}
+            >
+              <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>
+                {showHiddenProjects ? "Скрыть спрятанные проекты" : `Скрытые проекты: ${hiddenCount}`}
+              </Text>
+            </Pressable>
+          ) : null}
+        </ScrollView>
+      ) : null}
+
+      {/* Модальное окно добавления проекта */}
+      <Modal
+        title="Добавить проект"
+        open={addModalOpen}
+        onOpenChange={(open) => {
+          if (!open) setAddModalOpen(false);
+        }}
+      >
+        <Modal.Content>
+          <View style={{ gap: 16 }}>
+            <View
+              style={{
+                flexDirection: "row",
+                padding: 4,
+                borderRadius: 10,
+                backgroundColor: c.surface2,
+                borderWidth: 1,
+                borderColor: c.border,
+                gap: 4,
+              }}
+            >
+              {(
+                [
+                  { id: "existing", label: "Папка на сервере" },
+                  { id: "create", label: "Новая папка" },
+                  { id: "clone", label: "Git-клон" },
+                ] as const
+              ).map((tab) => {
+                const active = addMode === tab.id;
+                return (
+                  <Pressable
+                    key={tab.id}
+                    accessibilityRole="button"
+                    onPress={() => setAddMode(tab.id)}
+                    style={{
+                      flex: 1,
+                      paddingVertical: 8,
+                      paddingHorizontal: 6,
+                      borderRadius: 7,
+                      alignItems: "center",
+                      backgroundColor: active ? c.surface1 : undefined,
+                      borderWidth: active ? 1 : 0,
+                      borderColor: c.border,
+                    }}
+                  >
+                    <Text
+                      numberOfLines={1}
+                      style={{
+                        color: active ? c.foreground : c.foregroundMuted,
+                        fontSize: 12,
+                        fontWeight: active ? "700" : "500",
+                      }}
+                    >
+                      {tab.label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+
+            <View style={{ gap: 6 }}>
+              <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>
+                Название в списке (необязательно - по умолчанию имя папки)
+              </Text>
+              <TextInput
+                value={addCustomName}
+                onChangeText={setAddCustomName}
+                placeholder="Например: Мой сервис"
+                placeholderTextColor={c.foregroundMuted}
+                style={{
+                  paddingHorizontal: 12,
+                  paddingVertical: 10,
+                  borderRadius: 9,
+                  backgroundColor: c.surface2,
+                  borderWidth: 1,
+                  borderColor: c.border,
+                  color: c.foreground,
+                  fontSize: 14,
+                }}
+              />
+            </View>
+
+            {addMode === "existing" ? (
+              <View style={{ gap: 14 }}>
+                {candidates.length > 0 ? (
+                  <View style={{ gap: 8 }}>
+                    <Text style={{ color: c.foreground, fontSize: 13, fontWeight: "600" }}>
+                      Готовые репозитории в ~/repos (в 1 нажатие)
+                    </Text>
+                    {candidates.length > 5 ? (
+                      <TextInput
+                        value={candidateFilter}
+                        onChangeText={setCandidateFilter}
+                        placeholder="Поиск по названию папки..."
+                        placeholderTextColor={c.foregroundMuted}
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        style={{
+                          paddingHorizontal: 12,
+                          paddingVertical: 9,
+                          borderRadius: 9,
+                          backgroundColor: c.surface2,
+                          borderWidth: 1,
+                          borderColor: c.border,
+                          color: c.foreground,
+                          fontSize: 13,
+                        }}
+                      />
+                    ) : null}
+                    <View
+                      style={{
+                        borderRadius: 11,
+                        backgroundColor: c.surface2,
+                        borderWidth: 1,
+                        borderColor: c.border,
+                        overflow: "hidden",
+                      }}
+                    >
+                      {filteredCandidates.slice(0, 12).map((dir, idx) => (
+                        <View key={dir.path}>
+                          {idx > 0 ? <View style={{ height: 1, backgroundColor: c.border }} /> : null}
+                          <Pressable
+                            accessibilityRole="button"
+                            disabled={addingProject}
+                            onPress={() => void handleQuickAddCandidate(dir)}
+                            style={({ pressed }) => ({
+                              flexDirection: "row",
+                              alignItems: "center",
+                              gap: 10,
+                              paddingHorizontal: 12,
+                              paddingVertical: 11,
+                              backgroundColor: pressed ? c.surface1 : undefined,
+                            })}
+                          >
+                            <Icon
+                              name={dir.isGit ? "GitBranch" : "Folder"}
+                              size={16}
+                              color={dir.isGit ? c.accent : c.foregroundMuted}
+                            />
+                            <View style={{ flex: 1, minWidth: 0 }}>
+                              <Text numberOfLines={1} style={{ color: c.foreground, fontSize: 14, fontWeight: "600" }}>
+                                {dir.name}
+                              </Text>
+                              <Text numberOfLines={1} style={{ color: c.foregroundMuted, fontSize: 11 }}>
+                                {dir.path}
+                              </Text>
+                            </View>
+                            <View
+                              style={{
+                                paddingHorizontal: 10,
+                                paddingVertical: 5,
+                                borderRadius: 7,
+                                backgroundColor: c.accent,
+                              }}
+                            >
+                              <Text style={{ color: "#FFFFFF", fontSize: 12, fontWeight: "600" }}>
+                                Добавить
+                              </Text>
+                            </View>
+                          </Pressable>
+                        </View>
+                      ))}
+                    </View>
+                  </View>
+                ) : null}
+
+                <View style={{ gap: 6 }}>
+                  <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>
+                    Или укажите любой путь к папке на сервере вручную:
+                  </Text>
+                  <TextInput
+                    value={manualPath}
+                    onChangeText={setManualPath}
+                    placeholder="~/repos/my-project"
+                    placeholderTextColor={c.foregroundMuted}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    style={{
+                      paddingHorizontal: 12,
+                      paddingVertical: 10,
+                      borderRadius: 9,
+                      backgroundColor: c.surface2,
+                      borderWidth: 1,
+                      borderColor: c.border,
+                      color: c.foreground,
+                      fontSize: 14,
+                    }}
+                  />
+                  <Pressable
+                    accessibilityRole="button"
+                    disabled={addingProject || !manualPath.trim()}
+                    onPress={() => void handleSubmitAddProject()}
+                    style={({ pressed }) => ({
+                      marginTop: 4,
+                      paddingVertical: 12,
+                      borderRadius: 10,
+                      alignItems: "center",
+                      justifyContent: "center",
+                      backgroundColor: c.accent,
+                      opacity: addingProject || !manualPath.trim() ? 0.45 : pressed ? 0.85 : 1,
+                    })}
+                  >
+                    <Text style={{ color: "#FFFFFF", fontSize: 14, fontWeight: "700" }}>
+                      {addingProject ? "Добавление..." : "Добавить по пути"}
+                    </Text>
+                  </Pressable>
+                </View>
+              </View>
+            ) : null}
+
+            {addMode === "create" ? (
+              <View style={{ gap: 12 }}>
+                <View style={{ gap: 6 }}>
+                  <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>Имя новой папки</Text>
+                  <TextInput
+                    value={newFolderName}
+                    onChangeText={setNewFolderName}
+                    placeholder="my-new-project"
+                    placeholderTextColor={c.foregroundMuted}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    style={{
+                      paddingHorizontal: 12,
+                      paddingVertical: 10,
+                      borderRadius: 9,
+                      backgroundColor: c.surface2,
+                      borderWidth: 1,
+                      borderColor: c.border,
+                      color: c.foreground,
+                      fontSize: 14,
+                    }}
+                  />
+                </View>
+
+                <View style={{ gap: 6 }}>
+                  <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>Родительский каталог</Text>
+                  <TextInput
+                    value={parentPath}
+                    onChangeText={setParentPath}
+                    placeholder="~/repos"
+                    placeholderTextColor={c.foregroundMuted}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    style={{
+                      paddingHorizontal: 12,
+                      paddingVertical: 10,
+                      borderRadius: 9,
+                      backgroundColor: c.surface2,
+                      borderWidth: 1,
+                      borderColor: c.border,
+                      color: c.foreground,
+                      fontSize: 14,
+                    }}
+                  />
+                </View>
+
+                <View
+                  style={{
+                    padding: 10,
+                    borderRadius: 10,
+                    backgroundColor: c.surface2,
+                    borderWidth: 1,
+                    borderColor: c.border,
+                  }}
+                >
+                  <SettingsSwitch
+                    label="Инициализировать Git-репозиторий"
+                    hint="Выполнить git init в созданной папке"
+                    value={initGit}
+                    onValueChange={setInitGit}
+                  />
+                </View>
+
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={addingProject || !newFolderName.trim()}
+                  onPress={() => void handleSubmitAddProject()}
+                  style={({ pressed }) => ({
+                    paddingVertical: 13,
+                    borderRadius: 10,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    backgroundColor: c.accent,
+                    opacity: addingProject || !newFolderName.trim() ? 0.45 : pressed ? 0.85 : 1,
+                  })}
+                >
+                  <Text style={{ color: "#FFFFFF", fontSize: 15, fontWeight: "700" }}>
+                    {addingProject ? "Создание..." : "Создать и добавить проект"}
+                  </Text>
+                </Pressable>
+              </View>
+            ) : null}
+
+            {addMode === "clone" ? (
+              <View style={{ gap: 12 }}>
+                <View style={{ gap: 6 }}>
+                  <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>
+                    URL репозитория (SSH, HTTPS или owner/repo с GitHub)
+                  </Text>
+                  <TextInput
+                    value={cloneRepoUrl}
+                    onChangeText={setCloneRepoUrl}
+                    placeholder="git@github.com:org/repo.git или owner/repo"
+                    placeholderTextColor={c.foregroundMuted}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    style={{
+                      paddingHorizontal: 12,
+                      paddingVertical: 10,
+                      borderRadius: 9,
+                      backgroundColor: c.surface2,
+                      borderWidth: 1,
+                      borderColor: c.border,
+                      color: c.foreground,
+                      fontSize: 14,
+                    }}
+                  />
+                </View>
+
+                <View style={{ gap: 6 }}>
+                  <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>
+                    Имя папки (необязательно - определится из URL)
+                  </Text>
+                  <TextInput
+                    value={newFolderName}
+                    onChangeText={setNewFolderName}
+                    placeholder="repo"
+                    placeholderTextColor={c.foregroundMuted}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    style={{
+                      paddingHorizontal: 12,
+                      paddingVertical: 10,
+                      borderRadius: 9,
+                      backgroundColor: c.surface2,
+                      borderWidth: 1,
+                      borderColor: c.border,
+                      color: c.foreground,
+                      fontSize: 14,
+                    }}
+                  />
+                </View>
+
+                <View style={{ gap: 6 }}>
+                  <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>Куда клонировать</Text>
+                  <TextInput
+                    value={parentPath}
+                    onChangeText={setParentPath}
+                    placeholder="~/repos"
+                    placeholderTextColor={c.foregroundMuted}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    style={{
+                      paddingHorizontal: 12,
+                      paddingVertical: 10,
+                      borderRadius: 9,
+                      backgroundColor: c.surface2,
+                      borderWidth: 1,
+                      borderColor: c.border,
+                      color: c.foreground,
+                      fontSize: 14,
+                    }}
+                  />
+                </View>
+
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={addingProject || !cloneRepoUrl.trim()}
+                  onPress={() => void handleSubmitAddProject()}
+                  style={({ pressed }) => ({
+                    paddingVertical: 13,
+                    borderRadius: 10,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    backgroundColor: c.accent,
+                    opacity: addingProject || !cloneRepoUrl.trim() ? 0.45 : pressed ? 0.85 : 1,
+                  })}
+                >
+                  <Text style={{ color: "#FFFFFF", fontSize: 15, fontWeight: "700" }}>
+                    {addingProject ? "Клонирование..." : "Склонировать и добавить"}
+                  </Text>
+                </Pressable>
+              </View>
+            ) : null}
+          </View>
+        </Modal.Content>
+      </Modal>
+
+      {/* Модальное окно настроек проекта */}
+      <Modal
+        title={editingGroup ? `Проект: ${editingGroup.name}` : "Настройки проекта"}
+        open={Boolean(editingGroup)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setEditingProjectId(null);
+            setConfirmRemoveProject(false);
+          }
+        }}
+      >
+        <Modal.Content>
+          {editingGroup ? (
+            <View style={{ gap: 18 }}>
+              <SettingsSection title="Аватарка проекта (без ограничений размера и пропорций)">
+                <View
+                  style={{
+                    padding: 12,
+                    borderRadius: 12,
+                    backgroundColor: c.surface2,
+                    borderWidth: 1,
+                    borderColor: c.border,
+                    gap: 12,
+                  }}
+                >
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+                    <ProjectAvatar
+                      name={draftProjectName || editingGroup.name}
+                      projectId={editingGroup.id}
+                      avatarUri={previewAvatar.uri}
+                      emoji={previewAvatar.emoji}
+                      bg={previewAvatar.bg}
+                      size={54}
+                    />
+                    <View style={{ flex: 1, gap: 6 }}>
+                      <Text style={{ color: c.foreground, fontSize: 13, fontWeight: "600" }}>
+                        Любая картинка, пропорции и размер
+                      </Text>
+                      <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>
+                        Не требуется квадрат 1024x1024 - прямоугольные фото и большие PNG/JPG/WebP/SVG кадрируются автоматически.
+                      </Text>
+                    </View>
+                  </View>
+
+                  <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+                    {isWeb ? (
+                      <Pressable
+                        accessibilityRole="button"
+                        onPress={() => void handlePickWebFile()}
+                        style={{
+                          flexDirection: "row",
+                          alignItems: "center",
+                          gap: 6,
+                          paddingHorizontal: 12,
+                          paddingVertical: 9,
+                          borderRadius: 9,
+                          backgroundColor: c.accent,
+                        }}
+                      >
+                        <Icon name="Upload" size={14} color="#FFFFFF" />
+                        <Text style={{ color: "#FFFFFF", fontSize: 13, fontWeight: "600" }}>
+                          Загрузить с устройства
+                        </Text>
+                      </Pressable>
+                    ) : null}
+
+                    <Pressable
+                      accessibilityRole="button"
+                      onPress={() => {
+                        setDraftAvatarUrl("");
+                        setDraftAvatarUpdate({ kind: "none" });
+                      }}
+                      style={{
+                        flexDirection: "row",
+                        alignItems: "center",
+                        gap: 6,
+                        paddingHorizontal: 12,
+                        paddingVertical: 9,
+                        borderRadius: 9,
+                        backgroundColor: c.surface1,
+                        borderWidth: 1,
+                        borderColor: c.border,
+                      }}
+                    >
+                      <Icon name="RotateCcw" size={14} color={c.foregroundMuted} />
+                      <Text style={{ color: c.foreground, fontSize: 13 }}>Сбросить</Text>
+                    </Pressable>
+                  </View>
+
+                  <View style={{ gap: 6 }}>
+                    <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>
+                      Ссылка на картинку (https://...) или локальный путь к файлу (~/...):
+                    </Text>
+                    <TextInput
+                      value={draftAvatarUrl}
+                      onChangeText={setDraftAvatarUrl}
+                      placeholder="https://... или ~/icon.png"
+                      placeholderTextColor={c.foregroundMuted}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      style={{
+                        paddingHorizontal: 12,
+                        paddingVertical: 10,
+                        borderRadius: 9,
+                        backgroundColor: c.surface1,
+                        borderWidth: 1,
+                        borderColor: c.border,
+                        color: c.foreground,
+                        fontSize: 14,
+                      }}
+                    />
+                  </View>
+
+                  <View style={{ gap: 8 }}>
+                    <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>
+                      Или быстрый значок и цвет фона:
+                    </Text>
+                    <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+                      {EMOJI_PRESETS.map((em) => {
+                        const selected = previewAvatar.emoji === em && !previewAvatar.uri;
+                        return (
+                          <Pressable
+                            key={em}
+                            accessibilityRole="button"
+                            onPress={() => {
+                              setDraftAvatarUrl("");
+                              setDraftAvatarUpdate({
+                                kind: "emoji",
+                                emoji: em,
+                                bg: previewAvatar.bg || hashColor(editingGroup.id),
+                              });
+                            }}
+                            style={{
+                              width: 36,
+                              height: 36,
+                              borderRadius: 9,
+                              alignItems: "center",
+                              justifyContent: "center",
+                              backgroundColor: c.surface1,
+                              borderWidth: selected ? 2 : 1,
+                              borderColor: selected ? c.accent : c.border,
+                            }}
+                          >
+                            <Text style={{ fontSize: 18 }}>{em}</Text>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                    <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+                      {COLOR_PRESETS.map((col) => {
+                        const selected = (previewAvatar.bg || hashColor(editingGroup.id)) === col && !previewAvatar.uri;
+                        return (
+                          <Pressable
+                            key={col}
+                            accessibilityRole="button"
+                            onPress={() => {
+                              setDraftAvatarUrl("");
+                              setDraftAvatarUpdate({
+                                kind: "emoji",
+                                emoji: previewAvatar.emoji || monogram(draftProjectName || editingGroup.name),
+                                bg: col,
+                              });
+                            }}
+                            style={{
+                              width: 28,
+                              height: 28,
+                              borderRadius: 14,
+                              backgroundColor: col,
+                              borderWidth: selected ? 2.5 : 0,
+                              borderColor: c.foreground,
+                            }}
+                          />
+                        );
+                      })}
+                    </View>
+                  </View>
+                </View>
+              </SettingsSection>
+
+              <SettingsSection title="Основное">
+                <View
+                  style={{
+                    padding: 12,
+                    borderRadius: 12,
+                    backgroundColor: c.surface2,
+                    borderWidth: 1,
+                    borderColor: c.border,
+                    gap: 8,
+                  }}
+                >
+                  <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>Название проекта</Text>
+                  <TextInput
+                    value={draftProjectName}
+                    onChangeText={setDraftProjectName}
+                    placeholder={editingGroup.rootPath.split("/").pop() || "Проект"}
+                    placeholderTextColor={c.foregroundMuted}
+                    style={{
+                      paddingHorizontal: 12,
+                      paddingVertical: 10,
+                      borderRadius: 9,
+                      backgroundColor: c.surface1,
+                      borderWidth: 1,
+                      borderColor: c.border,
+                      color: c.foreground,
+                      fontSize: 14,
+                    }}
+                  />
+                  <Text numberOfLines={1} style={{ color: c.foregroundMuted, fontSize: 11 }}>
+                    Папка: {editingGroup.rootPath}
+                  </Text>
+                </View>
+              </SettingsSection>
+
+              <SettingsSection title="Поведение проекта">
+                <View
+                  style={{
+                    padding: 12,
+                    borderRadius: 12,
+                    backgroundColor: c.surface2,
+                    borderWidth: 1,
+                    borderColor: c.border,
+                    gap: 10,
+                  }}
+                >
+                  <SettingsSelect
+                    label="Кнопка + создает сессию"
+                    hint="Выберите общую папку репозитория или изолированный git worktree"
+                    value={draftNewMode}
+                    options={[
+                      { label: "В папке проекта", value: "directory" },
+                      { label: "В отдельном worktree", value: "worktree" },
+                    ]}
+                    onValueChange={(v) => setDraftNewMode(v)}
+                  />
+                  <TitleModelPicker
+                    key={editingGroup.id}
+                    theme={theme}
+                    hint={titleModelsError ? `Не удалось загрузить модели: ${titleModelsError}` : "Модели включенных провайдеров Paseo. При недоступности модели берется первая строка"}
+                    value={draftTitleModel}
+                    options={titleModelOptions(titleProviders, draftTitleModel)}
+                    onValueChange={(v) => setDraftTitleModel(v)}
+                  />
+                  <SettingsSwitch
+                    label="Скрыть проект из основного списка"
+                    hint="Редкие проекты можно убрать под кнопку внизу списка"
+                    value={draftHidden}
+                    onValueChange={setDraftHidden}
+                  />
+                </View>
+              </SettingsSection>
+
+              <Pressable
+                accessibilityRole="button"
+                disabled={savingProject}
+                onPress={() => void handleSaveProjectSettings()}
+                style={({ pressed }) => ({
+                  paddingVertical: 13,
+                  borderRadius: 10,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  backgroundColor: c.accent,
+                  opacity: savingProject ? 0.5 : pressed ? 0.85 : 1,
+                })}
+              >
+                <Text style={{ color: "#FFFFFF", fontSize: 15, fontWeight: "700" }}>
+                  {savingProject ? "Сохранение..." : "Сохранить настройки"}
+                </Text>
+              </Pressable>
+
+              <Pressable
+                accessibilityRole="button"
+                disabled={savingProject}
+                onPress={() => void handleRemoveProject()}
+                style={({ pressed }) => ({
+                  paddingVertical: 11,
+                  borderRadius: 10,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  backgroundColor: confirmRemoveProject ? c.statusDanger : c.surface2,
+                  borderWidth: 1,
+                  borderColor: confirmRemoveProject ? c.statusDanger : c.border,
+                  opacity: savingProject ? 0.5 : pressed ? 0.8 : 1,
+                })}
+              >
+                <Text
+                  style={{
+                    color: confirmRemoveProject ? "#FFFFFF" : c.statusDanger,
+                    fontSize: 13,
+                    fontWeight: "600",
+                  }}
+                >
+                  {confirmRemoveProject
+                    ? "Нажмите еще раз, чтобы убрать проект из Paseo (файлы останутся)"
+                    : "Убрать проект из списка Paseo"}
+                </Text>
+              </Pressable>
+            </View>
+          ) : null}
+        </Modal.Content>
+      </Modal>
+
+      {/* Модальное окно настроек отдельной сессии */}
+      <Modal
+        title="Настройки сессии"
+        open={Boolean(editingChat)}
+        onOpenChange={(open) => {
+          if (!open) setEditingChatId(null);
+        }}
+      >
+        <Modal.Content>
+          {editingChat ? (
+            <View style={{ gap: 16 }}>
+              <View
+                style={{
+                  padding: 12,
+                  borderRadius: 12,
+                  backgroundColor: c.surface2,
+                  borderWidth: 1,
+                  borderColor: c.border,
+                  gap: 10,
+                }}
+              >
+                <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>Название сессии</Text>
+                <TextInput
+                  value={draftChatTitle}
+                  onChangeText={setDraftChatTitle}
+                  placeholder="Новая сессия"
+                  placeholderTextColor={c.foregroundMuted}
+                  onSubmitEditing={() => void handleRenameChat()}
+                  style={{
+                    paddingHorizontal: 12,
+                    paddingVertical: 10,
+                    borderRadius: 9,
+                    backgroundColor: c.surface1,
+                    borderWidth: 1,
+                    borderColor: c.border,
+                    color: c.foreground,
+                    fontSize: 14,
+                  }}
+                />
+                {(() => {
+                  const titleModel = serverState.projects[editingChat.projectId]?.sessionTitleModel ?? null;
+                  const canSuggest = Boolean(titleModel && latestAgentByWorkspace[editingChat.id]) && !suggestingTitle;
+                  return (
+                    <View style={{ gap: 4 }}>
+                      <Pressable
+                        accessibilityRole="button"
+                        disabled={!canSuggest}
+                        onPress={() => void handleSuggestTitle()}
+                        style={({ pressed }) => ({
+                          flexDirection: "row",
+                          gap: 6,
+                          paddingVertical: 9,
+                          borderRadius: 9,
+                          alignItems: "center",
+                          justifyContent: "center",
+                          borderWidth: 1,
+                          borderColor: c.border,
+                          backgroundColor: c.surface1,
+                          opacity: !canSuggest ? 0.5 : pressed ? 0.85 : 1,
+                        })}
+                      >
+                        <Icon name="Sparkles" size={14} color={c.foreground} />
+                        <Text style={{ color: c.foreground, fontSize: 13 }}>
+                          {suggestingTitle ? "Генерирую…" : "Сгенерировать название"}
+                        </Text>
+                      </Pressable>
+                      <Text style={{ color: c.foregroundMuted, fontSize: 11 }}>
+                        {titleModel
+                          ? `${titleModel}, по последнему промпту и ответу. Проверь и сохрани`
+                          : "Выбери модель названия в настройках проекта"}
+                      </Text>
+                    </View>
+                  );
+                })()}
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={savingChat}
+                  onPress={() => void handleRenameChat()}
+                  style={({ pressed }) => ({
+                    paddingVertical: 11,
+                    borderRadius: 9,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    backgroundColor: c.accent,
+                    opacity: savingChat ? 0.5 : pressed ? 0.85 : 1,
+                  })}
+                >
+                  <Text style={{ color: "#FFFFFF", fontSize: 14, fontWeight: "600" }}>
+                    Сохранить название
+                  </Text>
+                </Pressable>
+              </View>
+
+              {/* Перенос сессии в другой проект */}
+              <View
+                style={{
+                  padding: 12,
+                  borderRadius: 12,
+                  backgroundColor: c.surface2,
+                  borderWidth: 1,
+                  borderColor: c.border,
+                  gap: 12,
+                }}
+              >
+                <View style={{ gap: 4 }}>
+                  <Text style={{ color: c.foreground, fontSize: 13, fontWeight: "600" }}>
+                    Проект и рабочий корень
+                  </Text>
+                  <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>
+                    Текущий проект:{" "}
+                    <Text style={{ color: c.foreground, fontWeight: "600" }}>
+                      {currentProjectGroup?.customName || currentProjectGroup?.name || "Неизвестный проект"}
+                    </Text>
+                  </Text>
+                  <Text numberOfLines={1} style={{ color: c.foregroundMuted, fontSize: 11 }}>
+                    {editingChat.workspaceDirectory}
+                  </Text>
+                </View>
+
+                {availableTargetProjects.length > 0 ? (
+                  <>
+                    <View style={{ height: 1, backgroundColor: c.border }} />
+
+                    <SettingsSelect
+                      label="Перенести в проект"
+                      hint="Рабочий корень сессии будет переназначен на выбранный проект"
+                      value={transferTargetProjectId}
+                      options={availableTargetProjects.map((p) => ({
+                        label: p.customName || p.name,
+                        value: p.id,
+                      }))}
+                      onValueChange={(val) => setTransferTargetProjectId(val)}
+                    />
+
+                    <SettingsSwitch
+                      label="Архивировать исходную сессию"
+                      hint="Скрыть старую сессию в исходном проекте после переноса"
+                      value={transferArchiveOriginal}
+                      onValueChange={setTransferArchiveOriginal}
+                    />
+
+                    <SettingsSwitch
+                      label="Перенести историю диалога (fork)"
+                      hint="Прикрепить предыдущие сообщения и контекст к новой сессии"
+                      value={transferIncludeHistory}
+                      onValueChange={setTransferIncludeHistory}
+                    />
+
+                    <Pressable
+                      accessibilityRole="button"
+                      disabled={transferringChat || !transferTargetProjectId}
+                      onPress={() => void handleTransferChat()}
+                      style={({ pressed }) => ({
+                        flexDirection: "row",
+                        gap: 8,
+                        paddingVertical: 11,
+                        borderRadius: 9,
+                        alignItems: "center",
+                        justifyContent: "center",
+                        backgroundColor: c.accent,
+                        opacity: transferringChat || !transferTargetProjectId ? 0.5 : pressed ? 0.85 : 1,
+                      })}
+                    >
+                      <Icon name="ArrowRightLeft" size={15} color="#FFFFFF" />
+                      <Text style={{ color: "#FFFFFF", fontSize: 14, fontWeight: "600" }}>
+                        {transferringChat ? "Переношу сессию…" : "Перенести в проект"}
+                      </Text>
+                    </Pressable>
+                  </>
+                ) : (
+                  <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>
+                    Нет других проектов в Штабе для переноса.
+                  </Text>
+                )}
+              </View>
+
+              <View
+                style={{
+                  borderRadius: 12,
+                  backgroundColor: c.surface2,
+                  borderWidth: 1,
+                  borderColor: c.border,
+                  overflow: "hidden",
+                }}
+              >
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={savingChat}
+                  onPress={() => void handleTogglePinChat()}
+                  style={({ pressed }) => ({
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 10,
+                    paddingHorizontal: 14,
+                    paddingVertical: 13,
+                    backgroundColor: pressed ? c.surface1 : undefined,
+                  })}
+                >
+                  <Icon name="Pin" size={16} color={editingChatPinned ? c.accent : c.foreground} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ color: c.foreground, fontSize: 14 }}>
+                      {editingChatPinned ? "Открепить сессию в панели" : "Закрепить сессию наверху"}
+                    </Text>
+                    <Text style={{ color: c.foregroundMuted, fontSize: 11 }}>
+                      Действует только внутри нашего блока проектов
+                    </Text>
+                  </View>
+                </Pressable>
+
+                <View style={{ height: 1, backgroundColor: c.border }} />
+
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => {
+                    const ag = latestAgentByWorkspace[editingChat.id];
+                    if (!ag) return;
+                    const link = `paseo:///h/${host.id || "local"}/agent/${ag.id}`;
+                    void copyText(link)
+                      .then(() => toast.show("Ссылка на чат скопирована", { variant: "info" }))
+                      .catch(() => toast.error("Не удалось скопировать ссылку"));
+                  }}
+                  style={({ pressed }) => ({
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 10,
+                    paddingHorizontal: 14,
+                    paddingVertical: 13,
+                    backgroundColor: pressed ? c.surface1 : undefined,
+                  })}
+                >
+                  <Icon name="ExternalLink" size={16} color={c.accent} />
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={{ color: c.foreground, fontSize: 14, fontWeight: "500" }}>
+                      Скопировать ссылку на чат
+                    </Text>
+                    <Text numberOfLines={1} style={{ color: c.foregroundMuted, fontSize: 11 }}>
+                      {latestAgentByWorkspace[editingChat.id]
+                        ? `paseo:///h/${host.id || "local"}/agent/${latestAgentByWorkspace[editingChat.id]!.id}`
+                        : "Нет активного чата"}
+                    </Text>
+                  </View>
+                </Pressable>
+
+                <View style={{ height: 1, backgroundColor: c.border }} />
+
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => {
+                    const ag = latestAgentByWorkspace[editingChat.id];
+                    if (!ag) return;
+                    void copyText(ag.id)
+                      .then(() => toast.show("ID чата скопирован", { variant: "info" }))
+                      .catch(() => toast.error("Не удалось скопировать ID"));
+                  }}
+                  style={({ pressed }) => ({
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 10,
+                    paddingHorizontal: 14,
+                    paddingVertical: 13,
+                    backgroundColor: pressed ? c.surface1 : undefined,
+                  })}
+                >
+                  <Icon name="Copy" size={16} color={c.foreground} />
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={{ color: c.foreground, fontSize: 14 }}>Скопировать ID чата (Agent ID)</Text>
+                    <Text numberOfLines={1} style={{ color: c.foregroundMuted, fontSize: 11 }}>
+                      {latestAgentByWorkspace[editingChat.id]?.id || ""}
+                    </Text>
+                  </View>
+                </Pressable>
+
+                <View style={{ height: 1, backgroundColor: c.border }} />
+
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => {
+                    void copyText(editingChat.workspaceDirectory)
+                      .then(() => toast.show("Путь скопирован", { variant: "info" }))
+                      .catch(() => toast.error("Не удалось скопировать путь"));
+                  }}
+                  style={({ pressed }) => ({
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 10,
+                    paddingHorizontal: 14,
+                    paddingVertical: 13,
+                    backgroundColor: pressed ? c.surface1 : undefined,
+                  })}
+                >
+                  <Icon name="Copy" size={16} color={c.foreground} />
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={{ color: c.foreground, fontSize: 14 }}>Скопировать рабочую папку</Text>
+                    <Text numberOfLines={1} style={{ color: c.foregroundMuted, fontSize: 11 }}>
+                      {editingChat.workspaceDirectory}
+                    </Text>
+                  </View>
+                </Pressable>
+
+                <View style={{ height: 1, backgroundColor: c.border }} />
+
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={savingChat}
+                  onPress={() => void handleArchiveChat(editingChat)}
+                  style={({ pressed }) => ({
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 10,
+                    paddingHorizontal: 14,
+                    paddingVertical: 13,
+                    backgroundColor: pressed ? c.surface1 : undefined,
+                  })}
+                >
+                  <Icon name="Archive" size={16} color={c.statusDanger} />
+                  <Text style={{ flex: 1, color: c.statusDanger, fontSize: 14, fontWeight: "600" }}>
+                    Архивировать сессию
+                  </Text>
+                </Pressable>
+              </View>
+
+              {agentsByWorkspace.get(editingChat.id) && agentsByWorkspace.get(editingChat.id)!.length > 1 ? (
+                <View
+                  style={{
+                    borderRadius: 12,
+                    backgroundColor: c.surface2,
+                    borderWidth: 1,
+                    borderColor: c.border,
+                    padding: 12,
+                    gap: 10,
+                  }}
+                >
+                  <Text style={{ color: c.foreground, fontSize: 13, fontWeight: "600" }}>
+                    {`Все чаты в этом воркспейсе (${agentsByWorkspace.get(editingChat.id)!.length})`}
+                  </Text>
+                  {agentsByWorkspace.get(editingChat.id)!.map((entry) => {
+                    const ag = entry.agent;
+                    const agFamily = resolveModelFamilyBadge(ag);
+                    const agTitle = ag.title || "Чат без названия";
+                    const link = `paseo:///h/${host.id || "local"}/agent/${ag.id}`;
+                    const isCurrent = latestAgentByWorkspace[editingChat.id]?.id === ag.id;
+                    return (
+                      <View
+                        key={ag.id}
+                        style={{
+                          flexDirection: "row",
+                          alignItems: "center",
+                          gap: 8,
+                          padding: 10,
+                          borderRadius: 8,
+                          backgroundColor: c.surface1,
+                          borderWidth: 1,
+                          borderColor: isCurrent ? c.accent : c.border,
+                        }}
+                      >
+                        <View style={{ flex: 1, minWidth: 0 }}>
+                          <Text numberOfLines={1} style={{ color: c.foreground, fontSize: 13, fontWeight: "500" }}>
+                            {agTitle}
+                          </Text>
+                          <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 2 }}>
+                            {agFamily ? (
+                              <View
+                                style={{
+                                  paddingHorizontal: 4,
+                                  paddingVertical: 1,
+                                  borderRadius: 3,
+                                  backgroundColor: agFamily.bg,
+                                }}
+                              >
+                                <Text style={{ fontSize: 9.5, fontWeight: "600", color: agFamily.text }}>
+                                  {agFamily.label}
+                                </Text>
+                              </View>
+                            ) : null}
+                            <Text numberOfLines={1} style={{ color: c.foregroundMuted, fontSize: 10.5 }}>
+                              {`ID: ${ag.id.slice(0, 8)}...`}
+                            </Text>
+                          </View>
+                        </View>
+                        <Pressable
+                          accessibilityRole="button"
+                          onPress={() => {
+                            void copyText(link)
+                              .then(() => toast.show("Ссылка на чат скопирована", { variant: "info" }))
+                              .catch(() => toast.error("Не удалось скопировать ссылку"));
+                          }}
+                          style={({ pressed }) => ({
+                            paddingHorizontal: 8,
+                            paddingVertical: 5,
+                            borderRadius: 6,
+                            backgroundColor: c.surface2,
+                            borderWidth: 1,
+                            borderColor: c.border,
+                            opacity: pressed ? 0.7 : 1,
+                          })}
+                        >
+                          <Text style={{ color: c.foreground, fontSize: 11, fontWeight: "500" }}>Ссылка</Text>
+                        </Pressable>
+                        <Pressable
+                          accessibilityRole="button"
+                          onPress={() => {
+                            void copyText(ag.id)
+                              .then(() => toast.show("ID скопирован", { variant: "info" }))
+                              .catch(() => toast.error("Не удалось скопировать ID"));
+                          }}
+                          style={({ pressed }) => ({
+                            paddingHorizontal: 8,
+                            paddingVertical: 5,
+                            borderRadius: 6,
+                            backgroundColor: c.surface2,
+                            borderWidth: 1,
+                            borderColor: c.border,
+                            opacity: pressed ? 0.7 : 1,
+                          })}
+                        >
+                          <Text style={{ color: c.foreground, fontSize: 11, fontWeight: "500" }}>ID</Text>
+                        </Pressable>
+                      </View>
+                    );
+                  })}
+                </View>
+              ) : null}
+            </View>
+          ) : null}
+        </Modal.Content>
+      </Modal>
+
+      {/* Модальное окно настроек панели проектов */}
+      <Modal
+        title="Настройки панели"
+        open={panelSettingsOpen}
+        onOpenChange={(open) => {
+          if (!open) setPanelSettingsOpen(false);
+        }}
+      >
+        <Modal.Content>
+          <View style={{ gap: 16 }}>
+            <SettingsSection title="Название вкладки">
+              <View
+                style={{
+                  padding: 12,
+                  borderRadius: 12,
+                  backgroundColor: c.surface2,
+                  borderWidth: 1,
+                  borderColor: c.border,
+                  gap: 10,
+                }}
+              >
+                <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>
+                  Отображаемый заголовок в боковой панели (по умолчанию «Штаб»)
+                </Text>
+                <TextInput
+                  value={draftHeaderTitle}
+                  onChangeText={setDraftHeaderTitle}
+                  placeholder="Штаб"
+                  placeholderTextColor={c.foregroundMuted}
+                  onSubmitEditing={() => void handleSaveHeaderTitle()}
+                  style={{
+                    paddingHorizontal: 12,
+                    paddingVertical: 10,
+                    borderRadius: 9,
+                    backgroundColor: c.surface1,
+                    borderWidth: 1,
+                    borderColor: c.border,
+                    color: c.foreground,
+                    fontSize: 14,
+                  }}
+                />
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={savingPanelSettings || !draftHeaderTitle.trim()}
+                  onPress={() => void handleSaveHeaderTitle()}
+                  style={({ pressed }) => ({
+                    paddingVertical: 11,
+                    borderRadius: 9,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    backgroundColor: c.accent,
+                    opacity: savingPanelSettings || !draftHeaderTitle.trim() ? 0.5 : pressed ? 0.85 : 1,
+                  })}
+                >
+                  <Text style={{ color: "#FFFFFF", fontSize: 14, fontWeight: "600" }}>
+                    {savingPanelSettings ? "Сохранение..." : "Сохранить название"}
+                  </Text>
+                </Pressable>
+              </View>
+            </SettingsSection>
+
+            <SettingsSection title="Мониторинг сервера">
+              <View
+                style={{
+                  padding: 12,
+                  borderRadius: 12,
+                  backgroundColor: c.surface2,
+                  borderWidth: 1,
+                  borderColor: c.border,
+                  gap: 10,
+                }}
+              >
+                <SettingsSwitch
+                  label="Состояние сервера (CPU, ОЗУ, сеть, диск)"
+                  hint="Отображает компактную строку метрик над проектами и подробную шторку с топом процессов по ОЗУ. При выключении фоновый опрос полностью останавливается (0 таймеров, 0 CPU)."
+                  value={serverState.showHostMetrics}
+                  onValueChange={(val) => void handleToggleHostMetrics(val)}
+                  disabled={savingPanelSettings}
+                />
+              </View>
+            </SettingsSection>
+
+            <SettingsSection title="Работники и команда">
+              <View
+                style={{
+                  padding: 12,
+                  borderRadius: 12,
+                  backgroundColor: c.surface2,
+                  borderWidth: 1,
+                  borderColor: c.border,
+                  gap: 10,
+                }}
+              >
+                <SettingsSwitch
+                  label="Ресурсы и активность работников (Команда)"
+                  hint="Отображает компактную строку команды (Зорик, Серега) над проектами и подробную шторку (CPU, ОЗУ, процессы cgroup, 24-часовая активность агентов Paseo)."
+                  value={serverState.showZorMetrics}
+                  onValueChange={(val) => void handleToggleZorMetrics(val)}
+                  disabled={savingPanelSettings}
+                />
+              </View>
+            </SettingsSection>
+          </View>
+        </Modal.Content>
+      </Modal>
+    </View>
+  );
+}
+
+function JumpBridgeScreen({ navigation, params }: PluginScreenProps) {
+  const handledRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const key = params?.jump ? `${params.jump}:${params.t ?? ""}` : null;
+    if (key && params?.jump && handledRef.current !== key) {
+      handledRef.current = key;
+      navigation?.openWorkspace({ workspaceId: params.jump });
+    }
+  }, [params, navigation]);
+
+  return <View />;
+}
+
+export default function contribute(client: PluginClientContext) {
+  const disposeScreen = client.addScreen({
+    id: "jump",
+    title: "Переход к сессии",
+    Component: JumpBridgeScreen,
+  });
+
+  const disposeHeader = client.addSidebarHeaderItem({
+    id: "projects-quick-header",
+    title: "Штаб",
+    Component: SidebarEmbeddedProjects,
+  });
+
+  client.addSurface("limits", UsageLimitsSurface);
+  client.addSurface("history", UsageHistorySurface);
+  client.addSurface("settings", UsageSettingsSurface);
+
+  client.addSettingsScreen({
+    id: "settings",
+    title: "Лимиты и расход",
+    icon: "Settings2",
+    Component: UsageSettingsSurface,
+  });
+
+  client.addWorkspacePanel({
+    id: "limits",
+    title: "Лимиты и расход",
+    icon: "Gauge",
+    context: "workspace",
+    locations: ["explorer", "workspace"],
+    Component: UsageLimitsPanel,
+  });
+  client.addWorkspacePanel({
+    id: "history",
+    title: "История расхода",
+    icon: "ChartColumn",
+    context: "workspace",
+    locations: ["explorer", "workspace"],
+    Component: UsageHistoryPanel,
+  });
+
+  const removeGitSurface = client.addSurface("git-workspace", GitWorkspaceSurface);
+  const removeServicesSurface = client.addSurface("services", Services);
+  const removeArtifactsSurface = client.addSurface("artifacts", ArtifactsSurface);
+  const removeWorkersSurface = client.addSurface("workers", WorkersSurface);
+
+  const removeArtifactsTransformer = client.addTimelineTransformer({
+    id: "paseo-hq-artifacts",
+    query: { itemType: "assistant_message" },
+    transform({ item, phase }) {
+      return splitArtifactTimelineMessage(item.text, phase, item.messageId);
+    },
+  });
+
+  const removeArtifactsTextRenderer = client.addTimelineRenderer({
+    kind: ARTIFACT_TEXT_KIND,
+    version: 1,
+    schema: z.object({
+      text: z.string(),
+      phase: z.enum(["streaming", "complete"]).optional(),
+    }),
+    Component: ({ item }) => (
+      <View testID="assistant-message" style={{ marginVertical: 2 }}>
+        <Markdown>{item.data.text}</Markdown>
+      </View>
+    ),
+  });
+
+  const removeArtifactsBlockRenderer = client.addTimelineRenderer({
+    kind: ARTIFACT_BLOCK_KIND,
+    version: 1,
+    schema: z.object({
+      name: z.string(),
+      title: z.string(),
+      kind: z.enum(["html", "svg", "markdown", "code", "data", "file"]),
+      code: z.string(),
+      complete: z.boolean().optional(),
+      fenceIndex: z.number().optional(),
+      size: z.number().optional(),
+      messageId: z.string().optional(),
+      projectId: z.string().optional(),
+      projectDisplayName: z.string().optional(),
+      artifactId: z.string().optional(),
+    }),
+    Component: ArtifactCard,
+  });
+
+
+  const removeGitSettings = client.addSettingsScreen({
+    id: "git-workspace-settings",
+    title: "Git и настройки GitLab",
+    icon: "FolderGit2",
+    Component: GitWorkspaceSettings,
+  });
+
+  const removeGitCommand = client.addCommandCenterItem({
+    id: "create-from-git",
+    title: "Создать рабочее пространство из GitHub / GitLab",
+    icon: "FolderGit2",
+    context: "global",
+    keywords: ["git", "github", "gitlab", "clone", "repo", "workspace", "проект", "клонировать"],
+    onSelect({ openSurface }) {
+      openSurface("git-workspace");
+    },
+  });
+
+  const removeGitSlash = client.addSlashCommand({
+    name: "git",
+    description: "Поиск, клонирование и создание рабочего пространства",
+    argumentHint: "",
+    context: "workspace",
+    onSubmit({ openSurface }) {
+      openSurface("git-workspace");
+    },
+  });
+
+  const removePills = contributeComposerPills(client);
+  const removeLimitAlerts = contributeLimitAlerts(client);
+
+  return () => {
+    disposeScreen();
+    disposeHeader();
+    try {
+      removeGitSurface();
+      removeServicesSurface();
+      removeArtifactsSurface();
+      removeWorkersSurface();
+      removeArtifactsTransformer();
+      removeArtifactsTextRenderer();
+      removeArtifactsBlockRenderer();
+      removeGitSettings();
+      removeGitCommand();
+      removeGitSlash();
+    } catch {
+      // ignore
+    }
+    try {
+      removePills();
+    } catch {
+      // ignore
+    }
+    try {
+      removeLimitAlerts();
+    } catch {
+      // ignore
+    }
+  };
+}
