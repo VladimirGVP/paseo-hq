@@ -5,8 +5,6 @@ import {
   Icon,
   Modal,
   ScrollView,
-  SettingsAction,
-  SettingsInput,
   SettingsSelect,
   SettingsSwitch,
   TextInput,
@@ -70,6 +68,45 @@ function emptyTask(): TeamTask {
     personal: false,
     ownerId: null,
   };
+}
+
+function Field({
+  label,
+  value,
+  onChangeText,
+  placeholder,
+  theme,
+}: {
+  label: string;
+  value: string;
+  onChangeText: (value: string) => void;
+  placeholder?: string;
+  theme: PluginTheme;
+}) {
+  const c = theme.colors;
+  return (
+    <View style={{ gap: 5 }}>
+      <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>{label}</Text>
+      <TextInput
+        value={value}
+        onChangeText={onChangeText}
+        placeholder={placeholder}
+        placeholderTextColor={c.foregroundMuted}
+        autoCapitalize="none"
+        autoCorrect={false}
+        style={{
+          paddingHorizontal: 12,
+          paddingVertical: 9,
+          borderRadius: 9,
+          backgroundColor: c.surface2,
+          borderWidth: 1,
+          borderColor: c.border,
+          color: c.foreground,
+          fontSize: 14,
+        }}
+      />
+    </View>
+  );
 }
 
 export function TeamSurface({ theme, layout }: PluginSurfaceProps) {
@@ -244,8 +281,9 @@ export function TeamSurface({ theme, layout }: PluginSurfaceProps) {
     }
   };
 
-  const handleConnect = async () => {
-    const url = connectUrl.trim();
+  const handleConnect = async (urlOverride?: string, branchOverride?: string) => {
+    const url = (urlOverride ?? connectUrl).trim();
+    const branch = (branchOverride ?? connectBranch).trim() || "main";
     if (!url) {
       setConnectError("укажите ссылку на репозиторий");
       return;
@@ -253,7 +291,7 @@ export function TeamSurface({ theme, layout }: PluginSurfaceProps) {
     setBusy(true);
     setConnectError(null);
     try {
-      const res = await connectRpc({ url, branch: connectBranch.trim() || "main" });
+      const res = await connectRpc({ url, branch });
       if (res.ok && res.board) {
         const newBoard = res.board;
         setBoards((prev) => [...prev.filter((b) => b.id !== newBoard.id), newBoard]);
@@ -261,6 +299,7 @@ export function TeamSurface({ theme, layout }: PluginSurfaceProps) {
         void selectRpc({ boardId: newBoard.id }).catch(() => undefined);
         setAddingBoard(false);
         setConnectUrl("");
+        setConnectError(null);
         toast.show("Репозиторий подключен и выбран актуальным", { variant: "success" });
       } else {
         setConnectError(res.error || "не удалось подключить репозиторий");
@@ -369,11 +408,13 @@ export function TeamSurface({ theme, layout }: PluginSurfaceProps) {
     [workers, board.members],
   );
 
-  const renderConnect = () => (
+  const renderEmptyConnect = () => (
     <View
       style={{
-        gap: 14,
-        maxWidth: 620,
+        gap: 12,
+        maxWidth: 440,
+        width: "100%",
+        alignSelf: "flex-start",
         backgroundColor: c.surface1,
         borderWidth: 1,
         borderColor: c.border,
@@ -381,41 +422,46 @@ export function TeamSurface({ theme, layout }: PluginSurfaceProps) {
         padding: 16,
       }}
     >
-      <View style={{ gap: 6 }}>
-        <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
-          <Text style={{ color: c.foreground, fontSize: 16, fontWeight: "700" }}>
-            {boards.length > 0 ? "Подключить ещё один репозиторий" : "Подключите репозиторий команды"}
-          </Text>
-          {boards.length > 0 ? (
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => setAddingBoard(false)}
-              style={({ pressed }) => ({
-                paddingHorizontal: 10,
-                paddingVertical: 5,
-                borderRadius: 6,
-                backgroundColor: c.surface2,
-                opacity: pressed ? 0.7 : 1,
-              })}
-            >
-              <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>Закрыть</Text>
-            </Pressable>
-          ) : null}
-        </View>
-        <Text style={{ color: c.foregroundMuted, fontSize: 13, lineHeight: 19 }}>
-          Команда и задачи хранятся в git-репозитории в файле hq.json. Вы можете указать несколько репозиториев и переключаться между ними в один клик. Выбранный актуальный репозиторий сохраняется навсегда.
+      <View style={{ gap: 4 }}>
+        <Text style={{ color: c.foreground, fontSize: 16, fontWeight: "700" }}>
+          Подключите репозиторий команды
+        </Text>
+        <Text style={{ color: c.foregroundMuted, fontSize: 12.5, lineHeight: 18 }}>
+          Команда и задачи хранятся в git-репозитории в файле hq.json.
         </Text>
       </View>
-      <SettingsInput label="Репозиторий" placeholder="github.com/you/team или git@..." onChangeText={setConnectUrl} />
-      <SettingsInput label="Ветка" initialValue={connectBranch} onChangeText={setConnectBranch} />
-      {connectError ? <Text style={{ color: c.statusDanger, fontSize: 12 }}>{connectError}</Text> : null}
-      <SettingsAction
-        label="Подключение"
-        hint="Репозиторий клонируется в служебную папку штаба"
-        actionLabel={busy ? "Подключаем..." : "Подключить и выбрать актуальным"}
-        disabled={busy}
-        onPress={() => void handleConnect()}
+      <Field
+        label="Ссылка на репозиторий"
+        value={connectUrl}
+        onChangeText={setConnectUrl}
+        placeholder="github.com/you/team или git@..."
+        theme={theme}
       />
+      <Field
+        label="Ветка"
+        value={connectBranch}
+        onChangeText={setConnectBranch}
+        placeholder="main"
+        theme={theme}
+      />
+      {connectError ? <Text style={{ color: c.statusDanger, fontSize: 12 }}>{connectError}</Text> : null}
+      <Pressable
+        accessibilityRole="button"
+        disabled={busy || !connectUrl.trim()}
+        onPress={() => void handleConnect()}
+        style={({ pressed }) => ({
+          alignSelf: "flex-start",
+          paddingHorizontal: 16,
+          paddingVertical: 9,
+          borderRadius: 8,
+          backgroundColor: c.accent,
+          opacity: busy || !connectUrl.trim() ? 0.5 : pressed ? 0.8 : 1,
+        })}
+      >
+        <Text style={{ color: "#FFFFFF", fontSize: 13, fontWeight: "600" }}>
+          {busy ? "Подключение..." : "Подключить"}
+        </Text>
+      </Pressable>
     </View>
   );
 
@@ -638,9 +684,15 @@ export function TeamSurface({ theme, layout }: PluginSurfaceProps) {
 
   return (
     <View style={{ flex: 1, backgroundColor: c.surface0 }}>
-      <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 20, gap: 16 }}>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 10, flex: 1, minWidth: 260 }}>
+      <ScrollView
+        style={{ flex: 1 }}
+        contentContainerStyle={{
+          padding: layout.compact ? 12 : 20,
+          gap: layout.compact ? 12 : 16,
+        }}
+      >
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 10, flex: 1, minWidth: 200 }}>
             <View
               style={{
                 width: 38,
@@ -655,7 +707,7 @@ export function TeamSurface({ theme, layout }: PluginSurfaceProps) {
             </View>
             <View style={{ flex: 1, minWidth: 0 }}>
               <Text style={{ color: c.foreground, fontSize: 18, fontWeight: "700" }}>Команда и задачи</Text>
-              <Text style={{ color: c.foregroundMuted, fontSize: 12.5, marginTop: 1 }}>
+              <Text numberOfLines={1} style={{ color: c.foregroundMuted, fontSize: 12.5, marginTop: 1 }}>
                 {currentBoard
                   ? boardDisplayName(currentBoard.url, board.name)
                   : boards.length === 0
@@ -665,80 +717,92 @@ export function TeamSurface({ theme, layout }: PluginSurfaceProps) {
             </View>
           </View>
           {currentId ? (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Переименовать доску"
-              onPress={() => setRenameOpen(true)}
-              style={({ pressed }) => ({
-                width: 34,
-                height: 34,
-                borderRadius: 8,
-                alignItems: "center",
-                justifyContent: "center",
-                backgroundColor: c.surface2,
-                borderWidth: 1,
-                borderColor: c.border,
-                opacity: pressed ? 0.7 : 1,
-              })}
-            >
-              <Icon name="Pencil" size={15} color={c.foreground} />
-            </Pressable>
-          ) : null}
-          {currentId ? (
-            <Pressable
-              accessibilityRole="button"
-              disabled={busy}
-              onPress={() => void handleSync()}
-              style={({ pressed }) => ({
-                flexDirection: "row",
-                alignItems: "center",
-                gap: 6,
-                paddingHorizontal: 12,
-                paddingVertical: 7,
-                borderRadius: 8,
-                backgroundColor: c.surface2,
-                borderWidth: 1,
-                borderColor: c.border,
-                opacity: pressed || busy ? 0.7 : 1,
-              })}
-            >
-              <Icon name="RefreshCw" size={14} color={c.foreground} />
-              <Text style={{ color: c.foreground, fontSize: 13 }}>Синхронизировать</Text>
-            </Pressable>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Переименовать доску"
+                onPress={() => setRenameOpen(true)}
+                style={({ pressed }) => ({
+                  width: 34,
+                  height: 34,
+                  borderRadius: 8,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  backgroundColor: c.surface2,
+                  borderWidth: 1,
+                  borderColor: c.border,
+                  opacity: pressed ? 0.7 : 1,
+                })}
+              >
+                <Icon name="Pencil" size={15} color={c.foreground} />
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                disabled={busy}
+                onPress={() => void handleSync()}
+                style={({ pressed }) => ({
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: 6,
+                  paddingHorizontal: 12,
+                  paddingVertical: 7,
+                  borderRadius: 8,
+                  backgroundColor: c.surface2,
+                  borderWidth: 1,
+                  borderColor: c.border,
+                  opacity: pressed || busy ? 0.7 : 1,
+                })}
+              >
+                <Icon name="RefreshCw" size={14} color={c.foreground} />
+                <Text style={{ color: c.foreground, fontSize: 13 }}>Синхронизировать</Text>
+              </Pressable>
+            </View>
           ) : null}
         </View>
 
         {boards.length > 0 ? (
           <View style={{ gap: 8 }}>
             <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
-              <Text style={{ color: c.foregroundMuted, fontSize: 11.5, fontWeight: "600", textTransform: "uppercase", letterSpacing: 0.5 }}>
-                Подключённые репозитории ({boards.length})
+              <Text
+                style={{
+                  color: c.foregroundMuted,
+                  fontSize: 11.5,
+                  fontWeight: "600",
+                  textTransform: "uppercase",
+                  letterSpacing: 0.5,
+                }}
+              >
+                Репозитории ({boards.length})
               </Text>
-              {!addingBoard ? (
-                <Pressable
-                  accessibilityRole="button"
-                  onPress={() => setAddingBoard(true)}
-                  style={({ pressed }) => ({
-                    flexDirection: "row",
-                    alignItems: "center",
-                    gap: 5,
-                    paddingHorizontal: 8,
-                    paddingVertical: 4,
-                    borderRadius: 6,
-                    backgroundColor: c.surface2,
-                    opacity: pressed ? 0.7 : 1,
-                  })}
-                >
-                  <Icon name="Plus" size={13} color={c.accent} />
-                  <Text style={{ color: c.accent, fontSize: 12, fontWeight: "600" }}>+ Добавить репозиторий</Text>
-                </Pressable>
-              ) : null}
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => {
+                  setConnectError(null);
+                  setAddingBoard(true);
+                }}
+                style={({ pressed }) => ({
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: 4,
+                  paddingHorizontal: 8,
+                  paddingVertical: 4,
+                  borderRadius: 6,
+                  backgroundColor: c.surface2,
+                  opacity: pressed ? 0.7 : 1,
+                })}
+              >
+                <Icon name="Plus" size={12} color={c.accent} />
+                <Text style={{ color: c.accent, fontSize: 11.5, fontWeight: "600" }}>Добавить</Text>
+              </Pressable>
             </View>
 
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingVertical: 2 }}>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={{ gap: 6, paddingVertical: 2 }}
+            >
               {boards.map((b) => {
                 const isActive = b.id === currentId;
-                const repoPath = b.url.replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/, "");
                 return (
                   <Pressable
                     key={b.id}
@@ -747,55 +811,78 @@ export function TeamSurface({ theme, layout }: PluginSurfaceProps) {
                     style={({ pressed }) => ({
                       flexDirection: "row",
                       alignItems: "center",
-                      gap: 8,
-                      paddingHorizontal: 12,
-                      paddingVertical: 8,
-                      borderRadius: 10,
-                      borderWidth: 1.5,
+                      gap: 6,
+                      paddingHorizontal: 10,
+                      paddingVertical: 6,
+                      borderRadius: 8,
+                      borderWidth: 1,
                       borderColor: isActive ? c.accent : c.border,
-                      backgroundColor: isActive ? `${c.accent}18` : c.surface1,
+                      backgroundColor: isActive ? `${c.accent}14` : c.surface1,
                       opacity: pressed ? 0.8 : 1,
                     })}
                   >
                     <Icon
-                      name={isActive ? "CheckCircle2" : "GitBranch"}
-                      size={15}
+                      name={isActive ? "Check" : "GitBranch"}
+                      size={13}
                       color={isActive ? c.accent : c.foregroundMuted}
                     />
-                    <View style={{ gap: 1 }}>
-                      <Text
-                        style={{
-                          color: isActive ? c.accent : c.foreground,
-                          fontSize: 13,
-                          fontWeight: isActive ? "700" : "500",
-                        }}
-                      >
-                        {b.name}
-                      </Text>
-                      <Text style={{ color: c.foregroundMuted, fontSize: 11 }}>
-                        {repoPath} ({b.branch})
-                      </Text>
-                    </View>
-                    {isActive ? (
-                      <View style={{ paddingHorizontal: 6, paddingVertical: 2, borderRadius: 5, backgroundColor: `${c.accent}30` }}>
-                        <Text style={{ color: c.accent, fontSize: 10, fontWeight: "700" }}>АКТУАЛЬНЫЙ</Text>
-                      </View>
-                    ) : null}
+                    <Text
+                      numberOfLines={1}
+                      style={{
+                        color: isActive ? c.accent : c.foreground,
+                        fontSize: 12.5,
+                        fontWeight: isActive ? "700" : "500",
+                        maxWidth: 160,
+                      }}
+                    >
+                      {b.name}
+                    </Text>
+                    <Text
+                      numberOfLines={1}
+                      style={{
+                        color: c.foregroundMuted,
+                        fontSize: 11,
+                        maxWidth: 100,
+                      }}
+                    >
+                      {b.branch}
+                    </Text>
                   </Pressable>
                 );
               })}
+
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => {
+                  setConnectError(null);
+                  setAddingBoard(true);
+                }}
+                style={({ pressed }) => ({
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: 4,
+                  paddingHorizontal: 9,
+                  paddingVertical: 6,
+                  borderRadius: 8,
+                  borderWidth: 1,
+                  borderStyle: "dashed",
+                  borderColor: c.border,
+                  backgroundColor: pressed ? c.surface2 : "transparent",
+                })}
+              >
+                <Icon name="Plus" size={13} color={c.foregroundMuted} />
+                <Text style={{ color: c.foregroundMuted, fontSize: 11.5 }}>Ещё</Text>
+              </Pressable>
             </ScrollView>
           </View>
         ) : null}
 
-        {addingBoard ? (
-          renderConnect()
-        ) : loading ? (
+        {loading ? (
           <View style={{ paddingVertical: 24, alignItems: "center", gap: 8 }}>
             <Text style={{ color: c.foregroundMuted, fontSize: 13 }}>Загрузка досок команды...</Text>
           </View>
         ) : boards.length === 0 ? (
-          renderConnect()
+          renderEmptyConnect()
         ) : null}
 
         {error ? <Text style={{ color: c.statusDanger, fontSize: 12 }}>{error}</Text> : null}
@@ -1016,44 +1103,17 @@ export function TeamSurface({ theme, layout }: PluginSurfaceProps) {
         onClose={() => setRenameOpen(false)}
         onSave={(name) => renameBoard(name)}
       />
-    </View>
-  );
-}
 
-function Field({
-  label,
-  value,
-  onChangeText,
-  placeholder,
-  theme,
-}: {
-  label: string;
-  value: string;
-  onChangeText: (value: string) => void;
-  placeholder?: string;
-  theme: PluginTheme;
-}) {
-  const c = theme.colors;
-  return (
-    <View style={{ gap: 5 }}>
-      <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>{label}</Text>
-      <TextInput
-        value={value}
-        onChangeText={onChangeText}
-        placeholder={placeholder}
-        placeholderTextColor={c.foregroundMuted}
-        autoCapitalize="none"
-        autoCorrect={false}
-        style={{
-          paddingHorizontal: 12,
-          paddingVertical: 9,
-          borderRadius: 9,
-          backgroundColor: c.surface2,
-          borderWidth: 1,
-          borderColor: c.border,
-          color: c.foreground,
-          fontSize: 13,
+      <ConnectModal
+        open={addingBoard}
+        busy={busy}
+        error={connectError}
+        theme={theme}
+        onClose={() => {
+          setAddingBoard(false);
+          setConnectError(null);
         }}
+        onConnect={(url, branch) => void handleConnect(url, branch)}
       />
     </View>
   );
@@ -1324,6 +1384,96 @@ function RenameModal({
               style={{ paddingHorizontal: 16, paddingVertical: 9, borderRadius: 8, backgroundColor: c.accent }}
             >
               <Text style={{ color: "#FFFFFF", fontSize: 13, fontWeight: "600" }}>Сохранить</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal.Content>
+    </Modal>
+  );
+}
+
+function ConnectModal({
+  open,
+  busy,
+  error,
+  theme,
+  onClose,
+  onConnect,
+}: {
+  open: boolean;
+  busy: boolean;
+  error: string | null;
+  theme: PluginTheme;
+  onClose: () => void;
+  onConnect: (url: string, branch: string) => void;
+}) {
+  const c = theme.colors;
+  const [url, setUrl] = useState("");
+  const [branch, setBranch] = useState("main");
+
+  useEffect(() => {
+    if (open) {
+      setUrl("");
+      setBranch("main");
+    }
+  }, [open]);
+
+  const handleSubmit = () => {
+    if (!url.trim()) return;
+    onConnect(url.trim(), branch.trim() || "main");
+  };
+
+  return (
+    <Modal title="Добавить репозиторий" open={open} onOpenChange={(value) => !value && onClose()}>
+      <Modal.Content>
+        <View style={{ gap: 12 }}>
+          <Text style={{ color: c.foregroundMuted, fontSize: 12.5, lineHeight: 18 }}>
+            Команда и задачи хранятся в git-репозитории в файле hq.json. Вы можете переключаться между несколькими репозиториями в один клик.
+          </Text>
+          <Field
+            label="Ссылка на репозиторий"
+            value={url}
+            onChangeText={setUrl}
+            placeholder="github.com/you/team или git@..."
+            theme={theme}
+          />
+          <Field
+            label="Ветка"
+            value={branch}
+            onChangeText={setBranch}
+            placeholder="main"
+            theme={theme}
+          />
+          {error ? <Text style={{ color: c.statusDanger, fontSize: 12 }}>{error}</Text> : null}
+          <View style={{ flexDirection: "row", gap: 8, justifyContent: "flex-end", paddingTop: 4 }}>
+            <Pressable
+              accessibilityRole="button"
+              onPress={onClose}
+              style={({ pressed }) => ({
+                paddingHorizontal: 14,
+                paddingVertical: 8,
+                borderRadius: 8,
+                backgroundColor: c.surface2,
+                opacity: pressed ? 0.7 : 1,
+              })}
+            >
+              <Text style={{ color: c.foregroundMuted, fontSize: 13 }}>Отмена</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              disabled={busy || !url.trim()}
+              onPress={handleSubmit}
+              style={({ pressed }) => ({
+                paddingHorizontal: 16,
+                paddingVertical: 8,
+                borderRadius: 8,
+                backgroundColor: c.accent,
+                opacity: busy || !url.trim() ? 0.5 : pressed ? 0.8 : 1,
+              })}
+            >
+              <Text style={{ color: "#FFFFFF", fontSize: 13, fontWeight: "600" }}>
+                {busy ? "Подключение..." : "Подключить"}
+              </Text>
             </Pressable>
           </View>
         </View>
