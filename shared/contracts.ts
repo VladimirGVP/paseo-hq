@@ -10,6 +10,8 @@ export const projectMetaSchema = z.object({
   newSessionMode: z.enum(["directory", "worktree"]).default("directory"),
   hidden: z.boolean().default(false),
   sessionTitleModel: z.string().nullable().default(null),
+  sessionsSortMode: z.enum(["auto", "manual"]).default("auto"),
+  sessionOrder: z.array(z.string()).default([]),
 });
 
 export type ProjectMeta = z.infer<typeof projectMetaSchema>;
@@ -23,6 +25,8 @@ export const sidebarStateSchema = z.object({
   showZorMetrics: z.boolean().default(true),
   showWorkersMetrics: z.boolean().default(true),
   headerTitle: z.string().default("Штаб"),
+  projectsSortMode: z.enum(["auto", "manual"]).default("auto"),
+  projectOrder: z.array(z.string()).default([]),
 });
 
 export type SidebarState = z.infer<typeof sidebarStateSchema>;
@@ -70,6 +74,8 @@ export const panelSettingsRpc = defineRpc({
     showHostMetrics: z.boolean().optional(),
     showZorMetrics: z.boolean().optional(),
     showWorkersMetrics: z.boolean().optional(),
+    projectsSortMode: z.enum(["auto", "manual"]).optional(),
+    projectOrder: z.array(z.string()).optional(),
     projectIds: z.array(z.string()).default([]),
   }),
   output: sidebarStateSchema,
@@ -155,6 +161,8 @@ export const projectSaveRpc = defineRpc({
     newSessionMode: z.enum(["directory", "worktree"]).optional(),
     hidden: z.boolean().optional(),
     sessionTitleModel: z.string().nullable().optional(),
+    sessionsSortMode: z.enum(["auto", "manual"]).optional(),
+    sessionOrder: z.array(z.string()).optional(),
   }),
   output: sidebarStateSchema,
 });

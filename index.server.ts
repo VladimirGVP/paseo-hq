@@ -70,6 +70,8 @@ interface StoredData {
   showHostMetrics: boolean;
   showZorMetrics: boolean;
   headerTitle: string;
+  projectsSortMode: "auto" | "manual";
+  projectOrder: string[];
 }
 
 let writeQueue: Promise<unknown> = Promise.resolve();
@@ -130,6 +132,10 @@ async function readStored(): Promise<StoredData> {
       showHostMetrics: typeof raw.showHostMetrics === "boolean" ? raw.showHostMetrics : true,
       showZorMetrics: typeof raw.showZorMetrics === "boolean" ? raw.showZorMetrics : true,
       headerTitle: typeof raw.headerTitle === "string" && raw.headerTitle.trim() ? raw.headerTitle.trim() : "Штаб",
+      projectsSortMode: raw.projectsSortMode === "manual" ? "manual" : "auto",
+      projectOrder: Array.isArray(raw.projectOrder)
+        ? raw.projectOrder.filter((x): x is string => typeof x === "string")
+        : [],
     };
   } catch {
     return {
@@ -140,6 +146,8 @@ async function readStored(): Promise<StoredData> {
       showHostMetrics: true,
       showZorMetrics: true,
       headerTitle: "Штаб",
+      projectsSortMode: "auto",
+      projectOrder: [],
     };
   }
 }
@@ -156,6 +164,8 @@ async function saveStored(data: StoredData): Promise<void> {
     showHostMetrics: data.showHostMetrics,
     showZorMetrics: data.showZorMetrics,
     headerTitle: data.headerTitle || "Штаб",
+    projectsSortMode: data.projectsSortMode || "auto",
+    projectOrder: data.projectOrder || [],
   };
   await mkdir(dirname(stateFile), { recursive: true, mode: 0o700 });
   const tmp = `${stateFile}.${process.pid}.${Date.now()}.tmp`;
@@ -349,6 +359,8 @@ async function buildState(projectIds: string[]): Promise<SidebarState> {
     showZorMetrics: stored.showZorMetrics,
     showWorkersMetrics: (stored as any).showWorkersMetrics ?? stored.showZorMetrics ?? true,
     headerTitle: stored.headerTitle || "Штаб",
+    projectsSortMode: stored.projectsSortMode || "auto",
+    projectOrder: stored.projectOrder || [],
   };
 }
 
@@ -501,27 +513,43 @@ export default function contribute(server: PluginServerContext) {
     return await buildState(projectIds);
   });
 
-  server.handle(panelSettingsRpc, async ({ headerTitle, showHostMetrics, showZorMetrics, showWorkersMetrics, projectIds }) => {
-    let nextShow = showHostMetrics;
-    await serializeWrite(async () => {
-      const stored = await readStored();
-      if (typeof headerTitle === "string") {
-        const trimmed = headerTitle.trim();
-        stored.headerTitle = trimmed || "Штаб";
-      }
-      if (typeof showHostMetrics === "boolean") {
-        stored.showHostMetrics = showHostMetrics;
-        nextShow = showHostMetrics;
-      }
-      if (typeof showZorMetrics === "boolean") {
-        stored.showZorMetrics = showZorMetrics;
-      }
-      if (typeof showWorkersMetrics === "boolean") {
-        stored.showZorMetrics = showWorkersMetrics;
-        (stored as any).showWorkersMetrics = showWorkersMetrics;
-      }
-      await saveStored(stored);
-    });
+  server.handle(
+    panelSettingsRpc,
+    async ({
+      headerTitle,
+      showHostMetrics,
+      showZorMetrics,
+      showWorkersMetrics,
+      projectsSortMode,
+      projectOrder,
+      projectIds,
+    }) => {
+      let nextShow = showHostMetrics;
+      await serializeWrite(async () => {
+        const stored = await readStored();
+        if (typeof headerTitle === "string") {
+          const trimmed = headerTitle.trim();
+          stored.headerTitle = trimmed || "Штаб";
+        }
+        if (typeof showHostMetrics === "boolean") {
+          stored.showHostMetrics = showHostMetrics;
+          nextShow = showHostMetrics;
+        }
+        if (typeof showZorMetrics === "boolean") {
+          stored.showZorMetrics = showZorMetrics;
+        }
+        if (typeof showWorkersMetrics === "boolean") {
+          stored.showZorMetrics = showWorkersMetrics;
+          (stored as any).showWorkersMetrics = showWorkersMetrics;
+        }
+        if (projectsSortMode === "auto" || projectsSortMode === "manual") {
+          stored.projectsSortMode = projectsSortMode;
+        }
+        if (Array.isArray(projectOrder)) {
+          stored.projectOrder = projectOrder;
+        }
+        await saveStored(stored);
+      });
     if (typeof nextShow === "boolean") {
       if (nextShow) {
         if (!sampler) sampler = startSampler();
@@ -655,80 +683,99 @@ export default function contribute(server: PluginServerContext) {
     return { ok: true };
   });
 
-  server.handle(projectSaveRpc, async ({ projectId, customName, avatar, newSessionMode, hidden, sessionTitleModel }) => {
-    let resolvedAvatar: { dataUri: string; buffer: Buffer; mime: string } | null = null;
-    if (avatar.kind === "dataUri") {
-      resolvedAvatar = await resolveAvatarToDataUri(avatar.dataUri);
-    } else if (avatar.kind === "urlOrPath") {
-      resolvedAvatar = await resolveAvatarToDataUri(avatar.value);
-    }
+  server.handle(
+    projectSaveRpc,
+    async ({
+      projectId,
+      customName,
+      avatar,
+      newSessionMode,
+      hidden,
+      sessionTitleModel,
+      sessionsSortMode,
+      sessionOrder,
+    }) => {
+      let resolvedAvatar: { dataUri: string; buffer: Buffer; mime: string } | null = null;
+      if (avatar.kind === "dataUri") {
+        resolvedAvatar = await resolveAvatarToDataUri(avatar.dataUri);
+      } else if (avatar.kind === "urlOrPath") {
+        resolvedAvatar = await resolveAvatarToDataUri(avatar.value);
+      }
 
-    if (customName !== undefined || avatar.kind === "none" || resolvedAvatar) {
-      await withDaemonClient(async (client) => {
-        if (customName !== undefined) {
-          const trimmed = customName === null ? null : customName.trim() || null;
-          await client.renameProject(projectId, trimmed);
-        }
+      if (customName !== undefined || avatar.kind === "none" || resolvedAvatar) {
+        await withDaemonClient(async (client) => {
+          if (customName !== undefined) {
+            const trimmed = customName === null ? null : customName.trim() || null;
+            await client.renameProject(projectId, trimmed);
+          }
+          if (avatar.kind === "none") {
+            try {
+              await client.setProjectIcon(projectId, { kind: "auto" });
+            } catch {
+              // Ignore if native project has no custom icon.
+            }
+          } else if (resolvedAvatar && resolvedAvatar.buffer.length <= 512 * 1024) {
+            try {
+              await client.setProjectIcon(projectId, {
+                kind: "custom",
+                data: resolvedAvatar.buffer.toString("base64"),
+                mimeType: resolvedAvatar.mime,
+              });
+            } catch {
+              // Non-square or >1024x1024 images are rejected by native Paseo,
+              // while our sidebar stores and renders them without any restrictions.
+            }
+          }
+        });
+      }
+
+      await serializeWrite(async () => {
+        const stored = await readStored();
+        const prev: ProjectMeta = stored.projects[projectId] ?? {
+          avatarUri: null,
+          avatarEmoji: null,
+          avatarBg: null,
+          newSessionMode: "directory",
+          hidden: false,
+          sessionTitleModel: null,
+          sessionsSortMode: "auto",
+          sessionOrder: [],
+        };
+        const next: ProjectMeta = { ...prev };
+
         if (avatar.kind === "none") {
-          try {
-            await client.setProjectIcon(projectId, { kind: "auto" });
-          } catch {
-            // Ignore if native project has no custom icon.
-          }
-        } else if (resolvedAvatar && resolvedAvatar.buffer.length <= 512 * 1024) {
-          try {
-            await client.setProjectIcon(projectId, {
-              kind: "custom",
-              data: resolvedAvatar.buffer.toString("base64"),
-              mimeType: resolvedAvatar.mime,
-            });
-          } catch {
-            // Non-square or >1024x1024 images are rejected by native Paseo,
-            // while our sidebar stores and renders them without any restrictions.
-          }
+          next.avatarUri = null;
+          next.avatarEmoji = null;
+          next.avatarBg = null;
+        } else if (avatar.kind === "emoji") {
+          next.avatarUri = null;
+          next.avatarEmoji = avatar.emoji;
+          next.avatarBg = avatar.bg;
+        } else if (resolvedAvatar) {
+          next.avatarUri = resolvedAvatar.dataUri;
+          next.avatarEmoji = null;
+          next.avatarBg = null;
         }
+
+        if (newSessionMode !== undefined) {
+          next.newSessionMode = newSessionMode;
+        }
+        if (hidden !== undefined) {
+          next.hidden = hidden;
+        }
+        if (sessionTitleModel !== undefined) {
+          next.sessionTitleModel = sessionTitleModel ? sessionTitleModel.trim() || null : null;
+        }
+        if (sessionsSortMode === "auto" || sessionsSortMode === "manual") {
+          next.sessionsSortMode = sessionsSortMode;
+        }
+        if (Array.isArray(sessionOrder)) {
+          next.sessionOrder = sessionOrder;
+        }
+
+        stored.projects[projectId] = next;
+        await saveStored(stored);
       });
-    }
-
-    await serializeWrite(async () => {
-      const stored = await readStored();
-      const prev: ProjectMeta = stored.projects[projectId] ?? {
-        avatarUri: null,
-        avatarEmoji: null,
-        avatarBg: null,
-        newSessionMode: "directory",
-        hidden: false,
-        sessionTitleModel: null,
-      };
-      const next: ProjectMeta = { ...prev };
-
-      if (avatar.kind === "none") {
-        next.avatarUri = null;
-        next.avatarEmoji = null;
-        next.avatarBg = null;
-      } else if (avatar.kind === "emoji") {
-        next.avatarUri = null;
-        next.avatarEmoji = avatar.emoji;
-        next.avatarBg = avatar.bg;
-      } else if (resolvedAvatar) {
-        next.avatarUri = resolvedAvatar.dataUri;
-        next.avatarEmoji = null;
-        next.avatarBg = null;
-      }
-
-      if (newSessionMode !== undefined) {
-        next.newSessionMode = newSessionMode;
-      }
-      if (hidden !== undefined) {
-        next.hidden = hidden;
-      }
-      if (sessionTitleModel !== undefined) {
-        next.sessionTitleModel = sessionTitleModel ? sessionTitleModel.trim() || null : null;
-      }
-
-      stored.projects[projectId] = next;
-      await saveStored(stored);
-    });
 
     return await buildState([projectId]);
   });

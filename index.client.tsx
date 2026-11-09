@@ -76,6 +76,8 @@ const DEFAULT_META: ProjectMeta = {
   newSessionMode: "directory",
   hidden: false,
   sessionTitleModel: null,
+  sessionsSortMode: "auto",
+  sessionOrder: [],
 };
 
 type AddProjectMode = "existing" | "create" | "clone";
@@ -701,12 +703,19 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
     showZorMetrics: true,
     showWorkersMetrics: true,
     headerTitle: "Штаб",
+    projectsSortMode: "auto",
+    projectOrder: [],
   });
 
   const [collapsed, setCollapsed] = useState(false);
   const [panelSettingsOpen, setPanelSettingsOpen] = useState(false);
   const [savingPanelSettings, setSavingPanelSettings] = useState(false);
   const [draftHeaderTitle, setDraftHeaderTitle] = useState("Штаб");
+  const [draftSessionsSortMode, setDraftSessionsSortMode] = useState<"auto" | "manual">("auto");
+  const [draggingProjectId, setDraggingProjectId] = useState<string | null>(null);
+  const [dragOverProjectId, setDragOverProjectId] = useState<string | null>(null);
+  const [draggingSessionId, setDraggingSessionId] = useState<string | null>(null);
+  const [dragOverSessionId, setDragOverSessionId] = useState<string | null>(null);
   const [expandedProjectIds, setExpandedProjectIds] = useState<Record<string, boolean>>({});
   const [expandedAllChats, setExpandedAllChats] = useState<Record<string, boolean>>({});
   const [showHiddenProjects, setShowHiddenProjects] = useState(false);
@@ -912,11 +921,25 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
 
       // Сортировка сессий внутри проекта:
       // 1) Закрепленные в нашем виджете всегда наверху
-      // 2) Остальные - по последнему отправленному промпту (свежие выше)
+      // 2) Если ручной режим (manual): по сохраненному sessionOrder
+      // 3) Иначе - по последнему отправленному промпту (свежие выше)
+      const sessSortMode = g.meta.sessionsSortMode ?? "auto";
+      const sessOrder = g.meta.sessionOrder ?? [];
+      const sessOrderMap =
+        sessSortMode === "manual" && sessOrder.length > 0
+          ? new Map(sessOrder.map((id, idx) => [id, idx]))
+          : null;
+
       g.chats.sort((a, b) => {
         const aPin = Boolean(pinnedMap[a.id]);
         const bPin = Boolean(pinnedMap[b.id]);
         if (aPin !== bPin) return aPin ? -1 : 1;
+
+        if (sessOrderMap) {
+          const aIdx = sessOrderMap.has(a.id) ? sessOrderMap.get(a.id)! : 999999;
+          const bIdx = sessOrderMap.has(b.id) ? sessOrderMap.get(b.id)! : 999999;
+          if (aIdx !== bIdx) return aIdx - bIdx;
+        }
 
         const aTs = chatLastPromptMs(a, agentPromptMap);
         const bTs = chatLastPromptMs(b, agentPromptMap);
@@ -931,8 +954,21 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
       g.summaryBucket = best;
     }
 
-    // Проекты - по последнему промпту в любой их сессии, работа агентов не двигает
-    list.sort((a, b) => b.lastPromptAt - a.lastPromptAt || a.name.localeCompare(b.name, "ru"));
+    // Сортировка проектов:
+    const projSortMode = serverState.projectsSortMode ?? "auto";
+    const projOrder = serverState.projectOrder ?? [];
+    if (projSortMode === "manual" && projOrder.length > 0) {
+      const projOrderMap = new Map(projOrder.map((id, idx) => [id, idx]));
+      list.sort((a, b) => {
+        const aIdx = projOrderMap.has(a.id) ? projOrderMap.get(a.id)! : 999999;
+        const bIdx = projOrderMap.has(b.id) ? projOrderMap.get(b.id)! : 999999;
+        if (aIdx !== bIdx) return aIdx - bIdx;
+        return b.lastPromptAt - a.lastPromptAt || a.name.localeCompare(b.name, "ru");
+      });
+    } else {
+      // По последнему промпту в любой их сессии, работа агентов не двигает
+      list.sort((a, b) => b.lastPromptAt - a.lastPromptAt || a.name.localeCompare(b.name, "ru"));
+    }
 
     return list;
   }, [projects, workspaces, archivedIds, serverState, agentBucketByWorkspace, agentTurnFinishMap, agentPromptMap]);
@@ -1126,6 +1162,7 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
     setDraftNewMode(group.meta.newSessionMode);
     setDraftHidden(group.meta.hidden);
     setDraftTitleModel(group.meta.sessionTitleModel ?? "first_line");
+    setDraftSessionsSortMode(group.meta.sessionsSortMode ?? "auto");
     setConfirmRemoveProject(false);
   };
 
@@ -1158,16 +1195,12 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
         newSessionMode: draftNewMode,
         hidden: draftHidden,
         sessionTitleModel: draftTitleModel === "first_line" ? null : draftTitleModel,
+        sessionsSortMode: draftSessionsSortMode,
       });
       setServerState((prev) => ({
-        projects: updated.projects,
+        ...prev,
+        ...updated,
         nativeIcons: { ...prev.nativeIcons, ...updated.nativeIcons },
-        lastRunningAt: updated.lastRunningAt,
-        pinnedSessions: updated.pinnedSessions,
-        showHostMetrics: updated.showHostMetrics,
-        showZorMetrics: updated.showZorMetrics,
-        showWorkersMetrics: updated.showWorkersMetrics ?? updated.showZorMetrics,
-        headerTitle: updated.headerTitle,
       }));
       await reloadAll();
       setEditingProjectId(null);
@@ -1177,6 +1210,120 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
     } finally {
       setSavingProject(false);
     }
+  };
+
+  const handleToggleProjectsSortMode = async (mode: "auto" | "manual") => {
+    if (savingPanelSettings) return;
+    setSavingPanelSettings(true);
+    setServerState((prev) => ({ ...prev, projectsSortMode: mode }));
+    try {
+      const updated = await updatePanelSettings({
+        projectsSortMode: mode,
+        projectIds: allGroups.map((g) => g.id),
+      });
+      setServerState((prev) => ({ ...prev, ...updated }));
+      toast.show(
+        mode === "manual"
+          ? "Включен ручной порядок проектов (перетаскивание)"
+          : "Включена автоматическая сортировка проектов",
+        { variant: "info" },
+      );
+    } catch (err) {
+      await reloadAll();
+      toast.error(err instanceof Error ? err.message : "Не удалось обновить режим сортировки");
+    } finally {
+      setSavingPanelSettings(false);
+    }
+  };
+
+  const handleReorderProjects = async (sourceId: string, targetId: string) => {
+    const currentIds = visibleGroups.map((g) => g.id);
+    const fromIndex = currentIds.indexOf(sourceId);
+    const toIndex = currentIds.indexOf(targetId);
+    if (fromIndex === -1 || toIndex === -1 || fromIndex === toIndex) return;
+
+    const nextIds = [...currentIds];
+    const [moved] = nextIds.splice(fromIndex, 1);
+    nextIds.splice(toIndex, 0, moved);
+
+    setServerState((prev) => ({ ...prev, projectOrder: nextIds }));
+    try {
+      const updated = await updatePanelSettings({
+        projectOrder: nextIds,
+        projectIds: allGroups.map((g) => g.id),
+      });
+      setServerState((prev) => ({ ...prev, ...updated }));
+    } catch (err) {
+      await reloadAll();
+      toast.error("Не удалось сохранить порядок проектов");
+    }
+  };
+
+  const handleMoveProject = async (projectId: string, delta: number) => {
+    const currentIds = visibleGroups.map((g) => g.id);
+    const idx = currentIds.indexOf(projectId);
+    if (idx === -1) return;
+    const targetIdx = idx + delta;
+    if (targetIdx < 0 || targetIdx >= currentIds.length) return;
+    await handleReorderProjects(projectId, currentIds[targetIdx]);
+  };
+
+  const handleReorderSessions = async (projectId: string, sourceId: string, targetId: string) => {
+    const group = allGroups.find((g) => g.id === projectId);
+    if (!group) return;
+    const currentIds = group.chats.map((c) => c.id);
+    const fromIndex = currentIds.indexOf(sourceId);
+    const toIndex = currentIds.indexOf(targetId);
+    if (fromIndex === -1 || toIndex === -1 || fromIndex === toIndex) return;
+
+    const nextIds = [...currentIds];
+    const [moved] = nextIds.splice(fromIndex, 1);
+    nextIds.splice(toIndex, 0, moved);
+
+    setServerState((prev) => {
+      const prevMeta = prev.projects[projectId] ?? {
+        avatarUri: null,
+        avatarEmoji: null,
+        avatarBg: null,
+        newSessionMode: "directory",
+        hidden: false,
+        sessionTitleModel: null,
+        sessionsSortMode: "manual",
+        sessionOrder: [],
+      };
+      return {
+        ...prev,
+        projects: {
+          ...prev.projects,
+          [projectId]: {
+            ...prevMeta,
+            sessionOrder: nextIds,
+          },
+        },
+      };
+    });
+
+    try {
+      const updated = await saveProject({
+        projectId,
+        sessionOrder: nextIds,
+      });
+      setServerState((prev) => ({ ...prev, ...updated }));
+    } catch (err) {
+      await reloadAll();
+      toast.error("Не удалось сохранить порядок сессий");
+    }
+  };
+
+  const handleMoveSession = async (projectId: string, sessionId: string, delta: number) => {
+    const group = allGroups.find((g) => g.id === projectId);
+    if (!group) return;
+    const currentIds = group.chats.map((c) => c.id);
+    const idx = currentIds.indexOf(sessionId);
+    if (idx === -1) return;
+    const targetIdx = idx + delta;
+    if (targetIdx < 0 || targetIdx >= currentIds.length) return;
+    await handleReorderSessions(projectId, sessionId, currentIds[targetIdx]);
   };
 
   const openPanelSettings = () => {
@@ -1700,17 +1847,50 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
             const showAll = Boolean(expandedAllChats[group.id]);
             const displayedChats = showAll ? group.chats : group.chats.slice(0, 8);
             const moreCount = group.chats.length - displayedChats.length;
+            const isManualProjects = serverState.projectsSortMode === "manual";
+            const isManualSessions = group.meta.sessionsSortMode === "manual";
+            const isDragOverProj = dragOverProjectId === group.id;
+            const isDraggingProj = draggingProjectId === group.id;
 
             return (
               <View
                 key={group.id}
+                {...({
+                  onDragOver: (e: any) => {
+                    if (draggingProjectId && draggingProjectId !== group.id) {
+                      e.preventDefault();
+                      e.dataTransfer.dropEffect = "move";
+                    }
+                  },
+                  onDragEnter: (e: any) => {
+                    if (draggingProjectId && draggingProjectId !== group.id) {
+                      e.preventDefault();
+                      setDragOverProjectId(group.id);
+                    }
+                  },
+                  onDragLeave: (e: any) => {
+                    if (dragOverProjectId === group.id) {
+                      e.preventDefault();
+                      setDragOverProjectId(null);
+                    }
+                  },
+                  onDrop: (e: any) => {
+                    e.preventDefault();
+                    const sourceId = e.dataTransfer.getData("text/plain") || draggingProjectId;
+                    if (sourceId && sourceId !== group.id) {
+                      void handleReorderProjects(sourceId, group.id);
+                    }
+                    setDraggingProjectId(null);
+                    setDragOverProjectId(null);
+                  },
+                } as any)}
                 style={{
                   borderRadius: 11,
-                  backgroundColor: c.surface1,
+                  backgroundColor: isDragOverProj ? c.surface2 : c.surface1,
                   borderWidth: 1,
-                  borderColor: isOpen ? c.accent : c.border,
+                  borderColor: isDragOverProj ? c.accent : isOpen ? c.accent : c.border,
                   overflow: "hidden",
-                  opacity: group.meta.hidden ? 0.65 : 1,
+                  opacity: isDraggingProj ? 0.45 : group.meta.hidden ? 0.65 : 1,
                 }}
               >
                 {/* Строка проекта: аватарка + название + настройки рядом с плюсом */}
@@ -1718,12 +1898,72 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
                   style={{
                     flexDirection: "row",
                     alignItems: "center",
-                    paddingLeft: 10,
+                    paddingLeft: isManualProjects ? 6 : 10,
                     paddingRight: 8,
                     paddingVertical: 8,
-                    gap: 8,
+                    gap: 6,
                   }}
                 >
+                  {isManualProjects ? (
+                    <View
+                      style={{
+                        flexDirection: "row",
+                        alignItems: "center",
+                        gap: 1,
+                      }}
+                    >
+                      <View
+                        {...({
+                          draggable: true,
+                          onDragStart: (e: any) => {
+                            e.dataTransfer.setData("text/plain", group.id);
+                            e.dataTransfer.effectAllowed = "move";
+                            setDraggingProjectId(group.id);
+                          },
+                          onDragEnd: () => {
+                            setDraggingProjectId(null);
+                            setDragOverProjectId(null);
+                          },
+                        } as any)}
+                        style={{
+                          paddingHorizontal: 3,
+                          paddingVertical: 6,
+                          cursor: "grab",
+                        }}
+                      >
+                        <Text style={{ color: c.foregroundMuted, fontSize: 13, userSelect: "none" }}>⠿</Text>
+                      </View>
+                      <View style={{ flexDirection: "column", gap: 1 }}>
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel="Переместить проект выше"
+                          disabled={idx === 0}
+                          onPress={() => void handleMoveProject(group.id, -1)}
+                          style={({ pressed }) => ({
+                            opacity: idx === 0 ? 0.2 : pressed ? 0.7 : 0.6,
+                            paddingHorizontal: 2,
+                            paddingVertical: 1,
+                          })}
+                        >
+                          <Text style={{ color: c.foregroundMuted, fontSize: 9, lineHeight: 9 }}>▲</Text>
+                        </Pressable>
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel="Переместить проект ниже"
+                          disabled={idx === visibleGroups.length - 1}
+                          onPress={() => void handleMoveProject(group.id, 1)}
+                          style={({ pressed }) => ({
+                            opacity: idx === visibleGroups.length - 1 ? 0.2 : pressed ? 0.7 : 0.6,
+                            paddingHorizontal: 2,
+                            paddingVertical: 1,
+                          })}
+                        >
+                          <Text style={{ color: c.foregroundMuted, fontSize: 9, lineHeight: 9 }}>▼</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  ) : null}
+
                   <Pressable
                     accessibilityRole="button"
                     onPress={() => toggleProjectOpen(group.id, idx === 0)}
@@ -1822,7 +2062,7 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
                       gap: 4,
                     }}
                   >
-                    {displayedChats.map((chat) => {
+                    {displayedChats.map((chat, chatIdx) => {
                       const bucket = resolveChatBucket(chat, agentBucketByWorkspace);
                       const isPinned = Boolean(serverState.pinnedSessions[chat.id]);
                       const lastRunMs = chatLastRunningMs(
@@ -1836,17 +2076,100 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
                       const agent = latestAgentByWorkspace[chat.id];
                       const family = resolveModelFamilyBadge(agent);
                       const title = chatTitle(chat, agent);
+                      const isDragOverSess = dragOverSessionId === chat.id;
+                      const isDraggingSess = draggingSessionId === chat.id;
 
                       return (
                         <View
                           key={chat.id}
+                          {...({
+                            onDragOver: (e: any) => {
+                              if (draggingSessionId && draggingSessionId !== chat.id) {
+                                e.preventDefault();
+                                e.dataTransfer.dropEffect = "move";
+                              }
+                            },
+                            onDragEnter: (e: any) => {
+                              if (draggingSessionId && draggingSessionId !== chat.id) {
+                                e.preventDefault();
+                                setDragOverSessionId(chat.id);
+                              }
+                            },
+                            onDragLeave: (e: any) => {
+                              if (dragOverSessionId === chat.id) {
+                                e.preventDefault();
+                                setDragOverSessionId(null);
+                              }
+                            },
+                            onDrop: (e: any) => {
+                              e.preventDefault();
+                              const sourceId = e.dataTransfer.getData("text/plain") || draggingSessionId;
+                              if (sourceId && sourceId !== chat.id) {
+                                void handleReorderSessions(group.id, sourceId, chat.id);
+                              }
+                              setDraggingSessionId(null);
+                              setDragOverSessionId(null);
+                            },
+                          } as any)}
                           style={{
                             flexDirection: "row",
                             alignItems: "center",
                             borderRadius: 9,
                             gap: 2,
+                            backgroundColor: isDragOverSess ? c.surface2 : undefined,
+                            opacity: isDraggingSess ? 0.45 : 1,
                           }}
                         >
+                          {isManualSessions ? (
+                            <View style={{ flexDirection: "row", alignItems: "center", gap: 1, paddingLeft: 4 }}>
+                              <View
+                                {...({
+                                  draggable: true,
+                                  onDragStart: (e: any) => {
+                                    e.dataTransfer.setData("text/plain", chat.id);
+                                    e.dataTransfer.effectAllowed = "move";
+                                    setDraggingSessionId(chat.id);
+                                  },
+                                  onDragEnd: () => {
+                                    setDraggingSessionId(null);
+                                    setDragOverSessionId(null);
+                                  },
+                                } as any)}
+                                style={{ paddingHorizontal: 3, paddingVertical: 4, cursor: "grab" }}
+                              >
+                                <Text style={{ color: c.foregroundMuted, fontSize: 12, userSelect: "none" }}>⠿</Text>
+                              </View>
+                              <View style={{ flexDirection: "column", gap: 1 }}>
+                                <Pressable
+                                  accessibilityRole="button"
+                                  accessibilityLabel="Переместить сессию выше"
+                                  disabled={chatIdx === 0}
+                                  onPress={() => void handleMoveSession(group.id, chat.id, -1)}
+                                  style={({ pressed }) => ({
+                                    opacity: chatIdx === 0 ? 0.2 : pressed ? 0.7 : 0.6,
+                                    paddingHorizontal: 2,
+                                    paddingVertical: 1,
+                                  })}
+                                >
+                                  <Text style={{ color: c.foregroundMuted, fontSize: 8, lineHeight: 8 }}>▲</Text>
+                                </Pressable>
+                                <Pressable
+                                  accessibilityRole="button"
+                                  accessibilityLabel="Переместить сессию ниже"
+                                  disabled={chatIdx === displayedChats.length - 1}
+                                  onPress={() => void handleMoveSession(group.id, chat.id, 1)}
+                                  style={({ pressed }) => ({
+                                    opacity: chatIdx === displayedChats.length - 1 ? 0.2 : pressed ? 0.7 : 0.6,
+                                    paddingHorizontal: 2,
+                                    paddingVertical: 1,
+                                  })}
+                                >
+                                  <Text style={{ color: c.foregroundMuted, fontSize: 8, lineHeight: 8 }}>▼</Text>
+                                </Pressable>
+                              </View>
+                            </View>
+                          ) : null}
+
                           <Pressable
                             accessibilityRole="button"
                             onPress={() => jumpToWorkspace(chat.id)}
@@ -2614,6 +2937,16 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
                     ]}
                     onValueChange={(v) => setDraftNewMode(v)}
                   />
+                  <SettingsSelect
+                    label="Сортировка сессий"
+                    hint="Как располагаются сессии внутри этого проекта"
+                    value={draftSessionsSortMode}
+                    options={[
+                      { label: "Автомат (по активности)", value: "auto" },
+                      { label: "Драг-н-дроп (ручной порядок)", value: "manual" },
+                    ]}
+                    onValueChange={(v) => setDraftSessionsSortMode(v as "auto" | "manual")}
+                  />
                   <TitleModelPicker
                     key={editingGroup.id}
                     theme={theme}
@@ -3166,6 +3499,31 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
                     {savingPanelSettings ? "Сохранение..." : "Сохранить название"}
                   </Text>
                 </Pressable>
+              </View>
+            </SettingsSection>
+
+            <SettingsSection title="Сортировка проектов">
+              <View
+                style={{
+                  padding: 12,
+                  borderRadius: 12,
+                  backgroundColor: c.surface2,
+                  borderWidth: 1,
+                  borderColor: c.border,
+                  gap: 10,
+                }}
+              >
+                <SettingsSelect
+                  label="Порядок проектов в боковой панели"
+                  hint="Автоматически по активности (свежие сверху) или ручной порядок (драг-н-дроп перетаскиванием)"
+                  value={serverState.projectsSortMode ?? "auto"}
+                  options={[
+                    { label: "Автомат (по активности)", value: "auto" },
+                    { label: "Драг-н-дроп (ручной порядок)", value: "manual" },
+                  ]}
+                  onValueChange={(v) => void handleToggleProjectsSortMode(v as "auto" | "manual")}
+                  disabled={savingPanelSettings}
+                />
               </View>
             </SettingsSection>
 
