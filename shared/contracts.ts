@@ -3,18 +3,9 @@ import { z } from "zod";
 
 export * from "./stats";
 
-export const projectMetaSchema = z.object({
-  avatarUri: z.string().nullable().default(null),
-  avatarEmoji: z.string().nullable().default(null),
-  avatarBg: z.string().nullable().default(null),
-  newSessionMode: z.enum(["directory", "worktree"]).default("directory"),
-  hidden: z.boolean().default(false),
-  sessionTitleModel: z.string().nullable().default(null),
-  sessionsSortMode: z.enum(["auto", "manual"]).default("auto"),
-  sessionOrder: z.array(z.string()).default([]),
-});
-
-export type ProjectMeta = z.infer<typeof projectMetaSchema>;
+import { projectMetaSchema } from "./project-meta";
+export { projectMetaSchema } from "./project-meta";
+export type { ProjectMeta } from "./project-meta";
 
 export const sidebarStateSchema = z.object({
   projects: z.record(z.string(), projectMetaSchema),
@@ -160,6 +151,7 @@ export const projectSaveRpc = defineRpc({
     avatar: avatarUpdateSchema.default({ kind: "keep" }),
     newSessionMode: z.enum(["directory", "worktree"]).optional(),
     hidden: z.boolean().optional(),
+    pinned: z.boolean().optional(),
     sessionTitleModel: z.string().nullable().optional(),
     sessionsSortMode: z.enum(["auto", "manual"]).optional(),
     sessionOrder: z.array(z.string()).optional(),

@@ -43,6 +43,7 @@ import {
   type ProjectMeta,
   type SidebarState,
 } from "./shared/contracts";
+import { compareProjectOrder } from "./shared/project-order";
 import { GENERATOR_TITLE, titleModelOptions } from "./shared/title-models";
 import { TitleModelPicker } from "./client/title-model-picker.client";
 import { HostMetricsBar } from "./client/host-widget";
@@ -75,6 +76,7 @@ const DEFAULT_META: ProjectMeta = {
   avatarBg: null,
   newSessionMode: "directory",
   hidden: false,
+  pinned: false,
   sessionTitleModel: null,
   sessionsSortMode: "auto",
   sessionOrder: [],
@@ -101,7 +103,7 @@ interface ProjectGroup {
   meta: ProjectMeta;
   resolvedAvatarUri: string | null;
   lastRunningAt: number;
-  /** Последний промпт Руслана в любой сессии проекта - единственный ключ порядка проектов. */
+  /** Последний промпт в любой сессии проекта, используется для порядка внутри группы. */
   lastPromptAt: number;
   hasRunning: boolean;
   summaryBucket: UiSessionBucket;
@@ -717,6 +719,7 @@ function ProjectHeaderPressable({
           <Text numberOfLines={1} style={{ flexShrink: 1, color: c.foreground, fontSize: 14, fontWeight: "600" }}>
             {group.name}
           </Text>
+          {group.meta.pinned ? <Text accessibilityLabel="Закрепленный проект" style={{ fontSize: 12 }}>📌</Text> : null}
           {!isOpen && group.summaryBucket !== "done" ? (
             <SessionStatusIndicator
               bucket={group.summaryBucket}
@@ -849,6 +852,7 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
   const [draftAvatarUpdate, setDraftAvatarUpdate] = useState<AvatarUpdate>({ kind: "keep" });
   const [draftNewMode, setDraftNewMode] = useState<"directory" | "worktree">("directory");
   const [draftHidden, setDraftHidden] = useState(false);
+  const [draftPinned, setDraftPinned] = useState(false);
   const [draftTitleModel, setDraftTitleModel] = useState("first_line");
   const [titleProviders, setTitleProviders] = useState<PaseoProviderSnapshotResult["entries"]>([]);
   const [titleModelsError, setTitleModelsError] = useState<string | null>(null);
@@ -1045,7 +1049,7 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
       g.summaryBucket = best;
     }
 
-    list.sort((a, b) => b.lastPromptAt - a.lastPromptAt || a.name.localeCompare(b.name, "ru"));
+    list.sort(compareProjectOrder);
     return list;
   }, [projects, workspaces, archivedIds, serverState, agentBucketByWorkspace, agentTurnFinishMap, agentPromptMap]);
 
@@ -1237,6 +1241,7 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
     setDraftAvatarUpdate({ kind: "keep" });
     setDraftNewMode(group.meta.newSessionMode);
     setDraftHidden(group.meta.hidden);
+    setDraftPinned(group.meta.pinned);
     setDraftTitleModel(group.meta.sessionTitleModel ?? "first_line");
     setConfirmRemoveProject(false);
   };
@@ -1269,6 +1274,7 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
         avatar: avatarPayload,
         newSessionMode: draftNewMode,
         hidden: draftHidden,
+        pinned: draftPinned,
         sessionTitleModel: draftTitleModel === "first_line" ? null : draftTitleModel,
       });
       setServerState((prev) => ({
@@ -2678,6 +2684,12 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
                     value={draftTitleModel}
                     options={titleModelOptions(titleProviders, draftTitleModel)}
                     onValueChange={(v) => setDraftTitleModel(v)}
+                  />
+                  <SettingsSwitch
+                    label="Закрепить проект наверху"
+                    hint="Закрепленные проекты показываются выше остальных"
+                    value={draftPinned}
+                    onValueChange={setDraftPinned}
                   />
                   <SettingsSwitch
                     label="Скрыть проект из основного списка"

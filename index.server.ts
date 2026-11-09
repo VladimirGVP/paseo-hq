@@ -691,6 +691,7 @@ export default function contribute(server: PluginServerContext) {
       avatar,
       newSessionMode,
       hidden,
+      pinned,
       sessionTitleModel,
       sessionsSortMode,
       sessionOrder,
@@ -737,6 +738,7 @@ export default function contribute(server: PluginServerContext) {
           avatarBg: null,
           newSessionMode: "directory",
           hidden: false,
+          pinned: false,
           sessionTitleModel: null,
           sessionsSortMode: "auto",
           sessionOrder: [],
@@ -762,6 +764,9 @@ export default function contribute(server: PluginServerContext) {
         }
         if (hidden !== undefined) {
           next.hidden = hidden;
+        }
+        if (pinned !== undefined) {
+          next.pinned = pinned;
         }
         if (sessionTitleModel !== undefined) {
           next.sessionTitleModel = sessionTitleModel ? sessionTitleModel.trim() || null : null;
