@@ -99,8 +99,9 @@ export function TeamSurface({ theme, layout }: PluginSurfaceProps) {
 
   const c = theme.colors;
 
-  const loadBoard = useCallback(
-    async (id: string) => {
+  const selectBoard = useCallback(
+    async (id: string, doSync: boolean) => {
+      setCurrentId(id);
       try {
         const res = await stateRpc({ boardId: id });
         setBoard(res.board);
@@ -108,8 +109,19 @@ export function TeamSurface({ theme, layout }: PluginSurfaceProps) {
       } catch (err) {
         setError(err instanceof Error ? err.message : "не удалось прочитать доску");
       }
+      if (doSync) {
+        try {
+          const synced = await syncRpc({ boardId: id });
+          if (synced.ok) {
+            setBoard(synced.board);
+            setError(null);
+          }
+        } catch {
+          // офлайн - остаётся локальная копия
+        }
+      }
     },
-    [stateRpc],
+    [stateRpc, syncRpc],
   );
 
   const loadBoards = useCallback(
@@ -119,8 +131,7 @@ export function TeamSurface({ theme, layout }: PluginSurfaceProps) {
         const res = await listRpc({});
         setBoards(res.boards);
         const id = selectId ?? (res.boards[0]?.id ?? "");
-        setCurrentId(id);
-        if (id) await loadBoard(id);
+        if (id) await selectBoard(id, true);
         else setBoard({ ...EMPTY_BOARD });
       } catch (err) {
         toast.error(err instanceof Error ? err.message : "не удалось прочитать доски");
@@ -128,7 +139,7 @@ export function TeamSurface({ theme, layout }: PluginSurfaceProps) {
         setLoading(false);
       }
     },
-    [listRpc, loadBoard, toast],
+    [listRpc, selectBoard, toast],
   );
 
   const loadWorkers = useCallback(async () => {
@@ -217,8 +228,7 @@ export function TeamSurface({ theme, layout }: PluginSurfaceProps) {
       const res = await connectRpc({ url, branch: connectBranch.trim() || "main" });
       if (res.ok && res.board) {
         setBoards((prev) => [...prev.filter((b) => b.id !== res.board!.id), res.board!]);
-        setCurrentId(res.board.id);
-        await loadBoard(res.board.id);
+        await selectBoard(res.board.id, false);
         setAddingBoard(false);
         setConnectUrl("");
         toast.show("Доска подключена", { variant: "success" });
@@ -578,8 +588,7 @@ export function TeamSurface({ theme, layout }: PluginSurfaceProps) {
                   key={b.id}
                   accessibilityRole="button"
                   onPress={() => {
-                    setCurrentId(b.id);
-                    void loadBoard(b.id);
+                    void selectBoard(b.id, true);
                   }}
                   style={({ pressed }) => ({
                     paddingHorizontal: 12,
