@@ -15,13 +15,7 @@ function member(id, patch = {}) {
     name: `Член ${id}`,
     role: "",
     avatar: "🙂",
-    hostServerId: null,
-    agentId: null,
-    provider: null,
-    cwd: null,
     container: null,
-    cgroupPath: null,
-    activityPath: null,
     updatedAt: "2026-11-09T10:00:00.000Z",
     ...patch,
   };
@@ -38,47 +32,58 @@ function task(id, patch = {}) {
     priority: 0,
     createdAt: "2026-11-09T10:00:00.000Z",
     updatedAt: "2026-11-09T10:00:00.000Z",
-    hostServerId: null,
-    agentId: null,
-    workspaceId: null,
     externalUrl: null,
+    personal: false,
+    ownerId: null,
     ...patch,
   };
 }
 
-test("репозиторий команды: подключение, сохранение, слияние двух клиентов", async () => {
+test("доски: подключение, сохранение, слияние двух клиентов", async () => {
   const root = await mkdtemp(join(tmpdir(), "hq-team-"));
   const bare = join(root, "team.git");
-  process.env.PASEO_HQ_TEAM_DIR = join(root, "clone-a");
+  process.env.PASEO_HQ_TEAM_DIR = root;
   process.env.PASEO_HQ_TEAM_CONFIG = join(root, "team.json");
   await exec("git", ["init", "--bare", "-q", bare]);
 
   try {
-    const { connectRepo, saveBoard, syncBoard } = await import("../server/team.server.ts");
+    const { connectBoard, disconnectBoard, listBoards, saveBoard, saveBoardById, syncBoard } =
+      await import("../server/team.server.ts");
 
-    const { repo, board } = await connectRepo(`file://${bare}`, "main");
-    assert.equal(board.members.length, 0);
-    assert.equal(repo.branch, "main");
+    const connected = await connectBoard(`file://${bare}`, "main");
+    assert.equal(connected.name, "team");
 
-    await saveBoard(repo, { version: 1, updatedAt: "", members: [member("m1")], tasks: [] });
+    await saveBoardById(connected.id, {
+      version: 1,
+      name: "",
+      updatedAt: "",
+      members: [member("m1")],
+      tasks: [],
+    });
 
     // Второй человек работает в своём клоне того же репозитория.
     const cloneB = join(root, "clone-b");
     await exec("git", ["clone", "-q", `file://${bare}`, cloneB]);
-    const repoB = { url: `file://${bare}`, branch: "main", dir: cloneB };
-    await saveBoard(repoB, { version: 1, updatedAt: "", members: [], tasks: [task("b", { assigneeId: "m1" })] });
+    await saveBoard(
+      { id: "b2", url: `file://${bare}`, branch: "main", dir: cloneB },
+      { version: 1, name: "", updatedAt: "", members: [], tasks: [task("b", { assigneeId: "m1" })] },
+    );
 
     // Первый клиент досылает свою задачу: обе должны остаться.
-    const merged = await saveBoard(repo, {
+    const merged = await saveBoardById(connected.id, {
       version: 1,
+      name: "",
       updatedAt: "",
       members: [member("m1")],
       tasks: [task("a")],
     });
     assert.deepEqual(merged.tasks.map((t) => t.id).sort(), ["a", "b"]);
-    assert.equal(merged.members.length, 1);
 
-    const synced = await syncBoard();
+    const boards = await listBoards();
+    assert.equal(boards.length, 1);
+    assert.equal(boards[0].name, "team");
+
+    const synced = await syncBoard(connected.id);
     assert.deepEqual(synced.tasks.map((t) => t.id).sort(), ["a", "b"]);
 
     // Проверяем, что файл действительно уехал в удалённый репозиторий.
@@ -87,6 +92,9 @@ test("репозиторий команды: подключение, сохра�
     const raw = JSON.parse(await readFile(join(check, "hq.json"), "utf8"));
     assert.equal(raw.members[0].id, "m1");
     assert.equal(raw.tasks.length, 2);
+
+    await disconnectBoard(connected.id);
+    assert.deepEqual(await listBoards(), []);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

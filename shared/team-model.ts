@@ -1,12 +1,11 @@
 import { z } from "zod";
 
-/** Виды членов команды. Контейнер - прежняя модель, чат и человек - универсальная. */
-export const MEMBER_KINDS = ["human", "paseo", "container"] as const;
+/** Виды членов команды. Контейнер - только для метрик монитора, человек - просто участник доски. */
+export const MEMBER_KINDS = ["human", "container"] as const;
 export type MemberKind = (typeof MEMBER_KINDS)[number];
 
 export const MEMBER_KIND_LABELS: Record<MemberKind, string> = {
   human: "Человек",
-  paseo: "Чат Paseo",
   container: "Контейнер",
 };
 
@@ -16,18 +15,8 @@ export const memberSchema = z.object({
   name: z.string().min(1),
   role: z.string().default(""),
   avatar: z.string().default("🙂"),
-  /** Хост Paseo, на котором живёт член команды; null - текущий. */
-  hostServerId: z.string().nullable().default(null),
-  /** Привязанный чат, если член - конкретный агент. */
-  agentId: z.string().nullable().default(null),
-  /** Провайдер и модель для запуска задачи, формат provider/model. */
-  provider: z.string().nullable().default(null),
-  /** Рабочий каталог для запуска задачи на хосте члена. */
-  cwd: z.string().nullable().default(null),
-  /** Поля прежней модели воркера-контейнера. */
+  /** Только для kind container: название контейнера из монитора. */
   container: z.string().nullable().default(null),
-  cgroupPath: z.string().nullable().default(null),
-  activityPath: z.string().nullable().default(null),
   updatedAt: z.string().default(""),
 });
 
@@ -53,10 +42,6 @@ export const taskSchema = z.object({
   priority: z.number().int().min(0).max(5).default(0),
   createdAt: z.string().default(""),
   updatedAt: z.string().default(""),
-  /** Куда запущена задача: хост, агент и воркспейс. */
-  hostServerId: z.string().nullable().default(null),
-  agentId: z.string().nullable().default(null),
-  workspaceId: z.string().nullable().default(null),
   externalUrl: z.string().nullable().default(null),
   /** Личная задача: не делится с остальной командой. */
   personal: z.boolean().default(false),
@@ -68,6 +53,7 @@ export type TeamTask = z.infer<typeof taskSchema>;
 
 export const boardSchema = z.object({
   version: z.literal(1).default(1),
+  name: z.string().default(""),
   updatedAt: z.string().default(""),
   members: z.array(memberSchema).default([]),
   tasks: z.array(taskSchema).default([]),
@@ -75,15 +61,23 @@ export const boardSchema = z.object({
 
 export type TeamBoard = z.infer<typeof boardSchema>;
 
-export const EMPTY_BOARD: TeamBoard = { version: 1, updatedAt: "", members: [], tasks: [] };
+export const EMPTY_BOARD: TeamBoard = { version: 1, name: "", updatedAt: "", members: [], tasks: [] };
 
-export const teamRepoSchema = z.object({
+/** Одна доска = один git-репозиторий с hq.json. */
+export const boardConfigSchema = z.object({
+  id: z.string().min(1),
   url: z.string().min(1),
   branch: z.string().min(1),
   dir: z.string().min(1),
 });
 
-export type TeamRepo = z.infer<typeof teamRepoSchema>;
+export type BoardConfig = z.infer<typeof boardConfigSchema>;
+
+export function boardDisplayName(url: string, boardName: string): string {
+  if (boardName && boardName.trim()) return boardName.trim();
+  const seg = url.replace(/\.git$/, "").replace(/\/+$/, "").split("/").pop() || "";
+  return seg || "Команда";
+}
 
 export function parseBoard(raw: unknown): TeamBoard {
   const parsed = boardSchema.safeParse(raw ?? {});
@@ -97,13 +91,6 @@ export function newId(prefix: string): string {
 export function nextTaskStatus(status: TaskStatus): TaskStatus {
   const index = TASK_STATUSES.indexOf(status);
   return TASK_STATUSES[(index + 1) % TASK_STATUSES.length];
-}
-
-/** Перевод задачи в работу, когда связанный с ней чат реально пошёл. */
-export function autoTaskStatus(task: TeamTask, agentStatus: string | null): TaskStatus | null {
-  if (!task.agentId || !agentStatus) return null;
-  if (agentStatus === "running" && task.status === "backlog") return "doing";
-  return null;
 }
 
 export function taskColumns(board: TeamBoard): Record<TaskStatus, TeamTask[]> {
@@ -154,6 +141,7 @@ export function mergeBoard(
 
   return {
     version: 1,
+    name: incoming.name || remote.name,
     updatedAt: new Date().toISOString(),
     members: [...members.values()],
     tasks: [...tasks.values()],

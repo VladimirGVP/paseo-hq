@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   EMPTY_BOARD,
-  autoTaskStatus,
+  boardDisplayName,
   memberTaskCounts,
   mergeBoard,
   nextTaskStatus,
@@ -21,10 +21,9 @@ function task(id, patch = {}) {
     priority: 0,
     createdAt: "2026-11-09T10:00:00.000Z",
     updatedAt: "2026-11-09T10:00:00.000Z",
-    hostServerId: null,
-    agentId: null,
-    workspaceId: null,
     externalUrl: null,
+    personal: false,
+    ownerId: null,
     ...patch,
   };
 }
@@ -36,13 +35,7 @@ function member(id, patch = {}) {
     name: `Член ${id}`,
     role: "",
     avatar: "🙂",
-    hostServerId: null,
-    agentId: null,
-    provider: null,
-    cwd: null,
     container: null,
-    cgroupPath: null,
-    activityPath: null,
     updatedAt: "2026-11-09T10:00:00.000Z",
     ...patch,
   };
@@ -55,18 +48,16 @@ test("пустая доска читается с умолчаниями", () =>
   assert.deepEqual(board.tasks, []);
 });
 
+test("название доски берётся из ссылки", () => {
+  assert.equal(boardDisplayName("https://github.com/gnatovskie/hq-team.git", ""), "hq-team");
+  assert.equal(boardDisplayName("https://github.com/gnatovskie/hq-team.git", "Команда"), "Команда");
+});
+
 test("статус задачи идёт по кругу", () => {
   assert.equal(nextTaskStatus("backlog"), "doing");
   assert.equal(nextTaskStatus("doing"), "review");
   assert.equal(nextTaskStatus("review"), "done");
   assert.equal(nextTaskStatus("done"), "backlog");
-});
-
-test("задача сама переходит в работу, когда чат пошёл", () => {
-  assert.equal(autoTaskStatus(task("t1", { agentId: "a1" }), "running"), "doing");
-  assert.equal(autoTaskStatus(task("t1", { agentId: "a1", status: "doing" }), "running"), null);
-  assert.equal(autoTaskStatus(task("t1"), "running"), null);
-  assert.equal(autoTaskStatus(task("t1", { agentId: "a1" }), "idle"), null);
 });
 
 test("колонки раскладывают задачи по статусу и приоритету", () => {
@@ -99,7 +90,11 @@ test("счётчик задач не считает готовые и без и�
 
 test("слияние досок не теряет задачи двух людей", () => {
   const remote = { ...EMPTY_BOARD, members: [member("m1")], tasks: [task("a")] };
-  const incoming = { ...EMPTY_BOARD, members: [member("m2", { updatedAt: "2026-11-09T11:00:00.000Z" })], tasks: [task("b")] };
+  const incoming = {
+    ...EMPTY_BOARD,
+    members: [member("m2", { updatedAt: "2026-11-09T11:00:00.000Z" })],
+    tasks: [task("b")],
+  };
   const merged = mergeBoard(remote, incoming);
   assert.deepEqual(merged.members.map((m) => m.id).sort(), ["m1", "m2"]);
   assert.deepEqual(merged.tasks.map((t) => t.id).sort(), ["a", "b"]);

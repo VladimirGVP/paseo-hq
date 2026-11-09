@@ -5,11 +5,13 @@ import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import {
   EMPTY_BOARD,
+  boardConfigSchema,
+  boardDisplayName,
   mergeBoard,
+  newId,
   parseBoard,
-  teamRepoSchema,
+  type BoardConfig,
   type TeamBoard,
-  type TeamRepo,
 } from "../shared/team-model.ts";
 
 const execFileAsync = promisify(execFile);
@@ -17,10 +19,10 @@ const execFileAsync = promisify(execFile);
 export const BOARD_FILE = "hq.json";
 const CONFIG_FILE =
   process.env.PASEO_HQ_TEAM_CONFIG || join(homedir(), ".local", "state", "paseo-hq", "team.json");
-const DEFAULT_DIR =
-  process.env.PASEO_HQ_TEAM_DIR || join(homedir(), ".local", "state", "paseo-hq", "team-repo");
+const BASE_DIR =
+  process.env.PASEO_HQ_TEAM_DIR || join(homedir(), ".local", "state", "paseo-hq");
 
-let cachedRepo: TeamRepo | null | undefined;
+let cachedConfigs: BoardConfig[] | null = null;
 
 function normalizeUrl(url: string): string {
   const trimmed = url.trim();
@@ -86,31 +88,41 @@ async function remoteUrl(dir: string): Promise<string | null> {
   }
 }
 
-export async function readRepoConfig(): Promise<TeamRepo | null> {
-  if (cachedRepo !== undefined) return cachedRepo;
+export async function readConfigs(): Promise<BoardConfig[]> {
+  if (cachedConfigs) return cachedConfigs;
   try {
-    const raw = JSON.parse(await readFile(CONFIG_FILE, "utf8")) as { repo?: unknown };
-    const parsed = teamRepoSchema.safeParse(raw?.repo);
-    cachedRepo = parsed.success ? parsed.data : null;
+    const raw = JSON.parse(await readFile(CONFIG_FILE, "utf8")) as { boards?: unknown };
+    const boards = Array.isArray(raw?.boards)
+      ? raw.boards
+          .map((b) => boardConfigSchema.safeParse(b))
+          .filter((r) => r.success)
+          .map((r) => (r as { data: BoardConfig }).data)
+      : [];
+    cachedConfigs = boards;
   } catch {
-    cachedRepo = null;
+    cachedConfigs = [];
   }
-  return cachedRepo;
+  return cachedConfigs;
 }
 
-export async function writeRepoConfig(repo: TeamRepo | null): Promise<void> {
+export async function writeConfigs(boards: BoardConfig[]): Promise<void> {
   await mkdir(dirname(CONFIG_FILE), { recursive: true, mode: 0o700 });
   const tmp = `${CONFIG_FILE}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(tmp, `${JSON.stringify({ repo }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  await writeFile(tmp, `${JSON.stringify({ boards }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
   await rename(tmp, CONFIG_FILE);
-  cachedRepo = repo;
+  cachedConfigs = boards;
 }
 
-export async function ensureRepo(repo: TeamRepo): Promise<void> {
-  if (!(await isRepo(repo.dir))) {
-    await mkdir(dirname(repo.dir), { recursive: true, mode: 0o700 });
+async function getConfig(boardId: string): Promise<BoardConfig | undefined> {
+  const configs = await readConfigs();
+  return configs.find((b) => b.id === boardId);
+}
+
+export async function ensureRepo(cfg: BoardConfig): Promise<void> {
+  if (!(await isRepo(cfg.dir))) {
+    await mkdir(dirname(cfg.dir), { recursive: true, mode: 0o700 });
     try {
-      await execFileAsync("git", ["clone", "--", repo.url, repo.dir], {
+      await execFileAsync("git", ["clone", "--", cfg.url, cfg.dir], {
         timeout: 120000,
         maxBuffer: 4 * 1024 * 1024,
         env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
@@ -119,58 +131,53 @@ export async function ensureRepo(repo: TeamRepo): Promise<void> {
       throw new Error(`не удалось склонировать репозиторий: ${errorText(err)}`);
     }
   } else {
-    const origin = await remoteUrl(repo.dir);
-    if (origin && origin !== repo.url) {
-      throw new Error("к папке уже подключён другой репозиторий, сначала отключите текущий");
+    const origin = await remoteUrl(cfg.dir);
+    if (origin && origin !== cfg.url) {
+      throw new Error("к папке уже подключён другой репозиторий, сначала отключите текущую доску");
     }
   }
 
-  await configureGit(repo.dir);
+  await configureGit(cfg.dir);
 
-  if (!(await hasHead(repo.dir))) {
-    // Клон пустого репозитория или репозитория, где нужная ветка не была веткой по умолчанию.
-    const remoteBranch = await git(repo.dir, [
-      "rev-parse",
-      "--verify",
-      `refs/remotes/origin/${repo.branch}`,
-    ])
+  if (!(await hasHead(cfg.dir))) {
+    const remoteBranch = await git(cfg.dir, ["rev-parse", "--verify", `refs/remotes/origin/${cfg.branch}`])
       .then(() => true)
       .catch(() => false);
     if (remoteBranch) {
-      await git(repo.dir, ["checkout", "-q", "-B", repo.branch, `origin/${repo.branch}`]);
+      await git(cfg.dir, ["checkout", "-q", "-B", cfg.branch, `origin/${cfg.branch}`]);
     } else {
-      await git(repo.dir, ["symbolic-ref", "HEAD", `refs/heads/${repo.branch}`]);
+      await git(cfg.dir, ["symbolic-ref", "HEAD", `refs/heads/${cfg.branch}`]);
     }
     return;
   }
 
-  const branchExists = await git(repo.dir, ["rev-parse", "--verify", `refs/heads/${repo.branch}`])
+  const branchExists = await git(cfg.dir, ["rev-parse", "--verify", `refs/heads/${cfg.branch}`])
     .then(() => true)
     .catch(() => false);
   if (!branchExists) {
-    await git(repo.dir, ["checkout", "-q", "-b", repo.branch]);
+    await git(cfg.dir, ["checkout", "-q", "-b", cfg.branch]);
   } else {
-    const current = (await git(repo.dir, ["branch", "--show-current"])).trim();
-    if (current !== repo.branch) await git(repo.dir, ["checkout", "-q", repo.branch]);
+    const current = (await git(cfg.dir, ["branch", "--show-current"])).trim();
+    if (current !== cfg.branch) await git(cfg.dir, ["checkout", "-q", cfg.branch]);
   }
 }
 
-export async function pullRepo(repo: TeamRepo): Promise<void> {
-  await ensureRepo(repo);
-  if (!(await hasHead(repo.dir))) return;
+export async function pullRepo(cfg: BoardConfig): Promise<void> {
+  await ensureRepo(cfg);
+  if (!(await hasHead(cfg.dir))) return;
   try {
-    await git(repo.dir, ["pull", "--rebase", "--autostash", "origin", repo.branch], 120000);
+    await git(cfg.dir, ["pull", "--rebase", "--autostash", "origin", cfg.branch], 120000);
   } catch (err) {
-    await git(repo.dir, ["rebase", "--abort"]).catch(() => undefined);
+    await git(cfg.dir, ["rebase", "--abort"]).catch(() => undefined);
     const text = errorText(err);
     if (/couldn't find remote ref|no such ref|not found/i.test(text)) return;
-    throw new Error(`не удалось обновить репозиторий: ${text}`);
+    throw new Error(`не удалось обновить доску: ${text}`);
   }
 }
 
-export async function readBoard(repo: TeamRepo): Promise<TeamBoard> {
+export async function readBoard(cfg: BoardConfig): Promise<TeamBoard> {
   try {
-    const raw = await readFile(join(repo.dir, BOARD_FILE), "utf8");
+    const raw = await readFile(join(cfg.dir, BOARD_FILE), "utf8");
     return parseBoard(JSON.parse(raw));
   } catch {
     return { ...EMPTY_BOARD };
@@ -178,37 +185,37 @@ export async function readBoard(repo: TeamRepo): Promise<TeamBoard> {
 }
 
 export async function saveBoard(
-  repo: TeamRepo,
+  cfg: BoardConfig,
   incoming: TeamBoard,
   removedTaskIds: readonly string[] = [],
   removedMemberIds: readonly string[] = [],
 ): Promise<TeamBoard> {
-  await pullRepo(repo);
-  const remote = await readBoard(repo);
+  await pullRepo(cfg);
+  const remote = await readBoard(cfg);
   const merged = mergeBoard(remote, incoming, removedTaskIds, removedMemberIds);
 
-  await writeFile(join(repo.dir, BOARD_FILE), `${JSON.stringify(merged, null, 2)}\n`, {
+  await writeFile(join(cfg.dir, BOARD_FILE), `${JSON.stringify(merged, null, 2)}\n`, {
     encoding: "utf8",
     mode: 0o600,
   });
-  await git(repo.dir, ["add", BOARD_FILE]);
+  await git(cfg.dir, ["add", BOARD_FILE]);
   try {
-    await git(repo.dir, ["commit", "-q", "-m", `hq: ${new Date().toISOString()}`]);
+    await git(cfg.dir, ["commit", "-q", "-m", `hq: ${new Date().toISOString()}`]);
   } catch (err) {
     const text = errorText(err);
     if (!/nothing to commit|no changes added|empty commit/i.test(text)) {
       throw new Error(`не удалось сохранить доску: ${text}`);
     }
   }
-  if (await hasHead(repo.dir)) {
+  if (await hasHead(cfg.dir)) {
     try {
-      await git(repo.dir, ["push", "origin", repo.branch], 120000);
+      await git(cfg.dir, ["push", "origin", cfg.branch], 120000);
     } catch {
       try {
-        await git(repo.dir, ["pull", "--rebase", "--autostash", "origin", repo.branch], 120000);
-        await git(repo.dir, ["push", "origin", repo.branch], 120000);
+        await git(cfg.dir, ["pull", "--rebase", "--autostash", "origin", cfg.branch], 120000);
+        await git(cfg.dir, ["push", "origin", cfg.branch], 120000);
       } catch (err) {
-        await git(repo.dir, ["rebase", "--abort"]).catch(() => undefined);
+        await git(cfg.dir, ["rebase", "--abort"]).catch(() => undefined);
         throw new Error(`не удалось отправить доску: ${errorText(err)}`);
       }
     }
@@ -216,34 +223,65 @@ export async function saveBoard(
   return merged;
 }
 
-export async function connectRepo(
+export async function connectBoard(
   url: string,
   branch: string,
-): Promise<{ repo: TeamRepo; board: TeamBoard }> {
-  const repo: TeamRepo = {
-    url: normalizeUrl(url),
-    branch: branch.trim() || "main",
-    dir: DEFAULT_DIR,
-  };
-  await ensureRepo(repo);
-  await pullRepo(repo);
-  const board = await readBoard(repo);
-  await writeRepoConfig(repo);
-  return { repo, board };
+): Promise<{ id: string; url: string; branch: string; dir: string; name: string }> {
+  const normalized = normalizeUrl(url);
+  const branchName = branch.trim() || "main";
+  const id = newId("b");
+  const cfg: BoardConfig = { id, url: normalized, branch: branchName, dir: join(BASE_DIR, `board-${id}`) };
+  await ensureRepo(cfg);
+  await pullRepo(cfg);
+  const board = await readBoard(cfg);
+  const configs = await readConfigs();
+  configs.push(cfg);
+  await writeConfigs(configs);
+  return { id, url: normalized, branch: branchName, dir: cfg.dir, name: boardDisplayName(normalized, board.name) };
 }
 
-export async function disconnectRepo(): Promise<void> {
-  const repo = await readRepoConfig();
-  await writeRepoConfig(null);
-  if (repo) {
-    // Не удаляем клон: в нём может остаться неотправленная доска. Просто убираем с пути.
-    await rename(repo.dir, `${repo.dir}.previous-${Date.now()}`).catch(() => undefined);
+export async function disconnectBoard(boardId: string): Promise<void> {
+  const configs = await readConfigs();
+  const cfg = configs.find((b) => b.id === boardId);
+  await writeConfigs(configs.filter((b) => b.id !== boardId));
+  if (cfg) {
+    await rename(cfg.dir, `${cfg.dir}.previous-${Date.now()}`).catch(() => undefined);
   }
 }
 
-export async function syncBoard(): Promise<TeamBoard> {
-  const repo = await readRepoConfig();
-  if (!repo) throw new Error("репозиторий команды не подключён");
-  await pullRepo(repo);
-  return readBoard(repo);
+export async function listBoards(): Promise<
+  { id: string; url: string; branch: string; dir: string; name: string; syncedAt: string | null }[]
+> {
+  const configs = await readConfigs();
+  const result = [];
+  for (const cfg of configs) {
+    const board = await readBoard(cfg);
+    result.push({
+      id: cfg.id,
+      url: cfg.url,
+      branch: cfg.branch,
+      dir: cfg.dir,
+      name: boardDisplayName(cfg.url, board.name),
+      syncedAt: board.updatedAt || null,
+    });
+  }
+  return result;
+}
+
+export async function syncBoard(boardId: string): Promise<TeamBoard> {
+  const cfg = await getConfig(boardId);
+  if (!cfg) throw new Error("доска не найдена");
+  await pullRepo(cfg);
+  return readBoard(cfg);
+}
+
+export async function saveBoardById(
+  boardId: string,
+  incoming: TeamBoard,
+  removedTaskIds: readonly string[] = [],
+  removedMemberIds: readonly string[] = [],
+): Promise<TeamBoard> {
+  const cfg = await getConfig(boardId);
+  if (!cfg) throw new Error("доска не найдена");
+  return saveBoard(cfg, incoming, removedTaskIds, removedMemberIds);
 }
