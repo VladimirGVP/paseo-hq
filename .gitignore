@@ -6,3 +6,6 @@ dist/
 .env.*
 !.env.example
 .DS_Store
+
+# Shipped sample data for gallery Load examples, not execution logs.
+!genui/gallery/data/**/*.log

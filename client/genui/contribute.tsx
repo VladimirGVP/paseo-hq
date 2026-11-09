@@ -1,7 +1,6 @@
 // Modified by GNATOVSKIE for integration into Paseo HQ, 2026-11-10.
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 import React from "react";
-import { adoptLegacyGenuiItem } from "../../shared/genui/legacy";
 import { buildFullInstructions } from "../../shared/genui/instructions";
 import {
   appendDemoRpc,
@@ -33,12 +32,6 @@ export default function contribute(client: PluginClientContext) {
   };
 
   const removeQueuePills = registerQueuePills(client);
-
-  client.addTimelineTransformer({
-    id: "genui-legacy",
-    query: { itemType: "plugin" },
-    transform: ({ item }) => adoptLegacyGenuiItem(item),
-  });
 
   client.addTimelineRenderer({
     kind: GENUI_BLOCK_KIND,

@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { splitHqTimelineMessage } from "./hq-timeline";
-import { adoptLegacyGenuiItem } from "../shared/genui/legacy";
 import { listGallery, readGallerySpec, sketchFontDataUrl } from "../server/genui/data-source";
 
 const fence = (language: string, body: string) => `\`\`\`${language}\n${body}\n\`\`\``;
@@ -42,12 +41,4 @@ describe("HQ owns inline UI and document rendering", () => {
     expect(await sketchFontDataUrl()).toMatch(/^data:font\/woff2;base64,/);
     await expect(readGallerySpec("../package.json")).rejects.toThrow("not a gallery spec");
   });
-});
-
-it("adopts saved demo/render_ui rows without changing the stored transcript", () => {
-  const old = { type: "plugin" as const, pluginId: "genui", id: "saved", kind: "genui-text", version: 1, data: { text: "Saved answer", phase: "complete" } };
-  expect(adoptLegacyGenuiItem(old)?.items[0]).toEqual({ type: "plugin", id: "saved", kind: "genui-text", version: 1, data: old.data });
-  expect(old.pluginId).toBe("genui");
-  expect(adoptLegacyGenuiItem({ ...old, pluginId: "another" })).toBeUndefined();
-  expect(adoptLegacyGenuiItem({ ...old, data: null })).toBeUndefined();
 });
