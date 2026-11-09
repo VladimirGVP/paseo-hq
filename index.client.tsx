@@ -3,6 +3,7 @@ import {
   Animated,
   Easing,
   Image,
+  PanResponder,
   Pressable,
   ScrollView,
   Text,
@@ -675,6 +676,408 @@ function openUsageLimits(serverId?: string) {
       window.location.href = targetUrl;
     }
   }
+}
+
+function DragGripHandle({
+  id,
+  index,
+  total,
+  onMoveDelta,
+  isCompact,
+  theme,
+  label,
+}: {
+  id: string;
+  index: number;
+  total: number;
+  onMoveDelta: (id: string, delta: number) => void;
+  isCompact: boolean;
+  theme: PluginTheme;
+  label: string;
+}) {
+  const c = theme.colors;
+  const [dragging, setDragging] = useState(false);
+  const accumDyRef = useRef(0);
+  const stepHeight = isCompact ? 48 : 42;
+
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onStartShouldSetPanResponderCapture: () => true,
+        onMoveShouldSetPanResponder: (_evt, gesture) => Math.abs(gesture.dy) > 4,
+        onMoveShouldSetPanResponderCapture: (_evt, gesture) => Math.abs(gesture.dy) > 4,
+        onPanResponderGrant: () => {
+          setDragging(true);
+          accumDyRef.current = 0;
+        },
+        onPanResponderMove: (_evt, gesture) => {
+          const dy = gesture.dy - accumDyRef.current;
+          if (dy > stepHeight) {
+            onMoveDelta(id, 1);
+            accumDyRef.current += stepHeight;
+          } else if (dy < -stepHeight) {
+            onMoveDelta(id, -1);
+            accumDyRef.current -= stepHeight;
+          }
+        },
+        onPanResponderRelease: () => {
+          setDragging(false);
+          accumDyRef.current = 0;
+        },
+        onPanResponderTerminate: () => {
+          setDragging(false);
+          accumDyRef.current = 0;
+        },
+        onPanResponderTerminationRequest: () => false,
+      }),
+    [id, onMoveDelta, stepHeight]
+  );
+
+  return (
+    <View style={{ flexDirection: "row", alignItems: "center", gap: 2 }}>
+      <View
+        {...panResponder.panHandlers}
+        style={({
+          paddingHorizontal: isCompact ? 6 : 4,
+          paddingVertical: isCompact ? 8 : 6,
+          backgroundColor: dragging ? c.surface2 : "transparent",
+          borderRadius: 6,
+          alignItems: "center",
+          justifyContent: "center",
+          cursor: "grab",
+        } as any)}
+      >
+        <Text
+          style={{
+            color: dragging ? c.accent : c.foregroundMuted,
+            fontSize: isCompact ? 16 : 13,
+            fontWeight: "700",
+            userSelect: "none",
+          }}
+        >
+          ⠿
+        </Text>
+      </View>
+      <View style={{ flexDirection: "column", gap: 2 }}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Переместить ${label} выше`}
+          hitSlop={{ top: 8, bottom: 4, left: 8, right: 8 }}
+          disabled={index === 0}
+          onPress={() => void onMoveDelta(id, -1)}
+          style={({ pressed }) => ({
+            width: isCompact ? 28 : 22,
+            height: isCompact ? 20 : 16,
+            borderRadius: 5,
+            alignItems: "center",
+            justifyContent: "center",
+            backgroundColor: c.surface2,
+            borderWidth: 1,
+            borderColor: c.border,
+            opacity: index === 0 ? 0.25 : pressed ? 0.6 : 0.85,
+          })}
+        >
+          <Text style={{ color: c.foreground, fontSize: 10, fontWeight: "700", lineHeight: 10 }}>▲</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Переместить ${label} ниже`}
+          hitSlop={{ top: 4, bottom: 8, left: 8, right: 8 }}
+          disabled={index === total - 1}
+          onPress={() => void onMoveDelta(id, 1)}
+          style={({ pressed }) => ({
+            width: isCompact ? 28 : 22,
+            height: isCompact ? 20 : 16,
+            borderRadius: 5,
+            alignItems: "center",
+            justifyContent: "center",
+            backgroundColor: c.surface2,
+            borderWidth: 1,
+            borderColor: c.border,
+            opacity: index === total - 1 ? 0.25 : pressed ? 0.6 : 0.85,
+          })}
+        >
+          <Text style={{ color: c.foreground, fontSize: 10, fontWeight: "700", lineHeight: 10 }}>▼</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
+function useLongPressDrag({
+  id,
+  enabled,
+  onMoveDelta,
+  onTap,
+  stepHeight = 48,
+}: {
+  id: string;
+  enabled: boolean;
+  onMoveDelta: (id: string, delta: number) => void;
+  onTap: () => void;
+  stepHeight?: number;
+}) {
+  const [isDragging, setIsDragging] = useState(false);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const isDraggingRef = useRef(false);
+  const accumDyRef = useRef(0);
+  const movedRef = useRef(false);
+
+  const panResponder = useMemo(() => {
+    if (!enabled) return null;
+    return PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onStartShouldSetPanResponderCapture: () => false,
+      onMoveShouldSetPanResponder: (_evt, gesture) => isDraggingRef.current || Math.abs(gesture.dy) > 5,
+      onMoveShouldSetPanResponderCapture: () => isDraggingRef.current,
+      onPanResponderGrant: () => {
+        accumDyRef.current = 0;
+        isDraggingRef.current = false;
+        movedRef.current = false;
+        timerRef.current = setTimeout(() => {
+          isDraggingRef.current = true;
+          setIsDragging(true);
+          try {
+            if (typeof navigator !== "undefined" && navigator.vibrate) {
+              navigator.vibrate(35);
+            }
+          } catch {}
+        }, 260);
+      },
+      onPanResponderMove: (_evt, gesture) => {
+        if (!isDraggingRef.current) {
+          if (Math.abs(gesture.dx) > 6 || Math.abs(gesture.dy) > 6) {
+            movedRef.current = true;
+            if (timerRef.current) {
+              clearTimeout(timerRef.current);
+              timerRef.current = null;
+            }
+          }
+          return;
+        }
+        const dy = gesture.dy - accumDyRef.current;
+        if (dy > stepHeight) {
+          onMoveDelta(id, 1);
+          accumDyRef.current += stepHeight;
+          try {
+            if (typeof navigator !== "undefined" && navigator.vibrate) navigator.vibrate(15);
+          } catch {}
+        } else if (dy < -stepHeight) {
+          onMoveDelta(id, -1);
+          accumDyRef.current -= stepHeight;
+          try {
+            if (typeof navigator !== "undefined" && navigator.vibrate) navigator.vibrate(15);
+          } catch {}
+        }
+      },
+      onPanResponderRelease: () => {
+        if (timerRef.current) {
+          clearTimeout(timerRef.current);
+          timerRef.current = null;
+        }
+        if (isDraggingRef.current) {
+          isDraggingRef.current = false;
+          setIsDragging(false);
+        } else if (!movedRef.current) {
+          onTap();
+        }
+      },
+      onPanResponderTerminate: () => {
+        if (timerRef.current) {
+          clearTimeout(timerRef.current);
+          timerRef.current = null;
+        }
+        isDraggingRef.current = false;
+        setIsDragging(false);
+      },
+      onPanResponderTerminationRequest: () => !isDraggingRef.current,
+    });
+  }, [enabled, id, onMoveDelta, onTap, stepHeight]);
+
+  return { panResponder, isDragging };
+}
+
+function ProjectHeaderPressable({
+  group,
+  isOpen,
+  isManual,
+  onToggleOpen,
+  onMoveProject,
+  theme,
+  layout,
+  relativeTime,
+}: {
+  group: ProjectGroup;
+  isOpen: boolean;
+  isManual: boolean;
+  onToggleOpen: () => void;
+  onMoveProject: (id: string, delta: number) => void;
+  theme: PluginTheme;
+  layout: PluginSidebarItemProps["layout"];
+  relativeTime: (ms: number) => string;
+}) {
+  const c = theme.colors;
+  const { panResponder, isDragging } = useLongPressDrag({
+    id: group.id,
+    enabled: isManual,
+    onMoveDelta: onMoveProject,
+    onTap: onToggleOpen,
+    stepHeight: layout.compact ? 52 : 46,
+  });
+
+  const content = (
+    <View
+      style={{
+        flex: 1,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 10,
+        paddingVertical: 2,
+        minWidth: 0,
+        opacity: isDragging ? 0.6 : 1,
+      }}
+    >
+      <ProjectAvatar
+        name={group.name}
+        projectId={group.id}
+        avatarUri={group.resolvedAvatarUri}
+        emoji={group.meta.avatarEmoji}
+        bg={group.meta.avatarBg}
+        size={32}
+      />
+      <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+          <Text numberOfLines={1} style={{ flexShrink: 1, color: c.foreground, fontSize: 14, fontWeight: "600" }}>
+            {group.name}
+          </Text>
+          {!isOpen && group.summaryBucket !== "done" ? (
+            <SessionStatusIndicator
+              bucket={group.summaryBucket}
+              theme={theme}
+              platform={layout.platform}
+              size={15}
+            />
+          ) : null}
+        </View>
+        <Text numberOfLines={1} style={{ color: c.foregroundMuted, fontSize: 11 }}>
+          {group.chats.length === 0
+            ? "нет активных сессий"
+            : `${group.chats.length} сесс.${
+                group.hasRunning
+                  ? " · в работе"
+                  : group.lastRunningAt
+                    ? ` · ${relativeTime(group.lastRunningAt)}`
+                    : ""
+              }`}
+        </Text>
+      </View>
+    </View>
+  );
+
+  if (isManual && panResponder) {
+    return (
+      <View
+        {...panResponder.panHandlers}
+        style={({
+          flex: 1,
+          flexDirection: "row",
+          alignItems: "center",
+          cursor: isDragging ? "grabbing" : "grab",
+          userSelect: "none",
+        } as any)}
+      >
+        {content}
+      </View>
+    );
+  }
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      onPress={onToggleOpen}
+      style={{
+        flex: 1,
+        flexDirection: "row",
+        alignItems: "center",
+      }}
+    >
+      {content}
+    </Pressable>
+  );
+}
+
+function SessionRowPressable({
+  chatId,
+  isManual,
+  onJump,
+  onMoveSession,
+  theme,
+  layout,
+  children,
+}: {
+  chatId: string;
+  isManual: boolean;
+  onJump: () => void;
+  onMoveSession: (id: string, delta: number) => void;
+  theme: PluginTheme;
+  layout: PluginSidebarItemProps["layout"];
+  children: React.ReactNode;
+}) {
+  const c = theme.colors;
+  const { panResponder, isDragging } = useLongPressDrag({
+    id: chatId,
+    enabled: isManual,
+    onMoveDelta: onMoveSession,
+    onTap: onJump,
+    stepHeight: layout.compact ? 44 : 38,
+  });
+
+  if (isManual && panResponder) {
+    return (
+      <View
+        {...panResponder.panHandlers}
+        style={({
+          flex: 1,
+          minWidth: 0,
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 8,
+          paddingVertical: layout.compact ? 11 : 9,
+          paddingLeft: 9,
+          paddingRight: 8,
+          borderRadius: 9,
+          backgroundColor: isDragging ? c.surface2 : undefined,
+          opacity: isDragging ? 0.6 : 1,
+          cursor: isDragging ? "grabbing" : "grab",
+          userSelect: "none",
+        } as any)}
+      >
+        {children}
+      </View>
+    );
+  }
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      onPress={onJump}
+      style={({ pressed }) => ({
+        flex: 1,
+        minWidth: 0,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        paddingVertical: layout.compact ? 11 : 9,
+        paddingLeft: 9,
+        paddingRight: 8,
+        borderRadius: 9,
+        backgroundColor: pressed ? c.surface2 : undefined,
+      })}
+    >
+      {children}
+    </Pressable>
+  );
 }
 
 function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover }: PluginSidebarItemProps) {
@@ -1972,133 +2375,27 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
                   }}
                 >
                   {isManualProjects ? (
-                    <View
-                      style={{
-                        flexDirection: "row",
-                        alignItems: "center",
-                        gap: 2,
-                      }}
-                    >
-                      <View
-                        {...({
-                          draggable: true,
-                          onDragStart: (e: any) => {
-                            e.dataTransfer.setData("text/plain", group.id);
-                            e.dataTransfer.effectAllowed = "move";
-                            setDraggingProjectId(group.id);
-                          },
-                          onDragEnd: () => {
-                            setDraggingProjectId(null);
-                            setDragOverProjectId(null);
-                          },
-                          onTouchStart: () => handleTouchStartProject(group.id),
-                          onTouchMove: handleTouchMoveProject,
-                          onTouchEnd: handleTouchEndProject,
-                          onTouchCancel: handleTouchEndProject,
-                        } as any)}
-                        style={{
-                          paddingHorizontal: layout.compact ? 6 : 4,
-                          paddingVertical: layout.compact ? 8 : 6,
-                          touchAction: "none",
-                          cursor: "grab",
-                          alignItems: "center",
-                          justifyContent: "center",
-                        }}
-                      >
-                        <Text style={{ color: c.foregroundMuted, fontSize: layout.compact ? 15 : 13, userSelect: "none" }}>⠿</Text>
-                      </View>
-                      <View style={{ flexDirection: "column", gap: 2 }}>
-                        <Pressable
-                          accessibilityRole="button"
-                          accessibilityLabel="Переместить проект выше"
-                          hitSlop={{ top: 8, bottom: 4, left: 8, right: 8 }}
-                          disabled={idx === 0}
-                          onPress={() => void handleMoveProject(group.id, -1)}
-                          style={({ pressed }) => ({
-                            width: layout.compact ? 28 : 22,
-                            height: layout.compact ? 20 : 16,
-                            borderRadius: 5,
-                            alignItems: "center",
-                            justifyContent: "center",
-                            backgroundColor: c.surface2,
-                            borderWidth: 1,
-                            borderColor: c.border,
-                            opacity: idx === 0 ? 0.25 : pressed ? 0.6 : 0.85,
-                          })}
-                        >
-                          <Text style={{ color: c.foreground, fontSize: 10, fontWeight: "700", lineHeight: 10 }}>▲</Text>
-                        </Pressable>
-                        <Pressable
-                          accessibilityRole="button"
-                          accessibilityLabel="Переместить проект ниже"
-                          hitSlop={{ top: 4, bottom: 8, left: 8, right: 8 }}
-                          disabled={idx === visibleGroups.length - 1}
-                          onPress={() => void handleMoveProject(group.id, 1)}
-                          style={({ pressed }) => ({
-                            width: layout.compact ? 28 : 22,
-                            height: layout.compact ? 20 : 16,
-                            borderRadius: 5,
-                            alignItems: "center",
-                            justifyContent: "center",
-                            backgroundColor: c.surface2,
-                            borderWidth: 1,
-                            borderColor: c.border,
-                            opacity: idx === visibleGroups.length - 1 ? 0.25 : pressed ? 0.6 : 0.85,
-                          })}
-                        >
-                          <Text style={{ color: c.foreground, fontSize: 10, fontWeight: "700", lineHeight: 10 }}>▼</Text>
-                        </Pressable>
-                      </View>
-                    </View>
+                    <DragGripHandle
+                      id={group.id}
+                      index={idx}
+                      total={visibleGroups.length}
+                      onMoveDelta={handleMoveProject}
+                      isCompact={layout.compact}
+                      theme={theme}
+                      label="проект"
+                    />
                   ) : null}
 
-                  <Pressable
-                    accessibilityRole="button"
-                    onPress={() => toggleProjectOpen(group.id, idx === 0)}
-                    style={{
-                      flex: 1,
-                      flexDirection: "row",
-                      alignItems: "center",
-                      gap: 10,
-                      paddingVertical: 2,
-                      minWidth: 0,
-                    }}
-                  >
-                    <ProjectAvatar
-                      name={group.name}
-                      projectId={group.id}
-                      avatarUri={group.resolvedAvatarUri}
-                      emoji={group.meta.avatarEmoji}
-                      bg={group.meta.avatarBg}
-                      size={32}
-                    />
-                    <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-                      <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-                        <Text numberOfLines={1} style={{ flexShrink: 1, color: c.foreground, fontSize: 14, fontWeight: "600" }}>
-                          {group.name}
-                        </Text>
-                        {!isOpen && group.summaryBucket !== "done" ? (
-                          <SessionStatusIndicator
-                            bucket={group.summaryBucket}
-                            theme={theme}
-                            platform={layout.platform}
-                            size={15}
-                          />
-                        ) : null}
-                      </View>
-                      <Text numberOfLines={1} style={{ color: c.foregroundMuted, fontSize: 11 }}>
-                        {group.chats.length === 0
-                          ? "нет активных сессий"
-                          : `${group.chats.length} сесс.${
-                              group.hasRunning
-                                ? " · в работе"
-                                : group.lastRunningAt
-                                  ? ` · ${relativeTime(group.lastRunningAt)}`
-                                  : ""
-                            }`}
-                      </Text>
-                    </View>
-                  </Pressable>
+                  <ProjectHeaderPressable
+                    group={group}
+                    isOpen={isOpen}
+                    isManual={isManualProjects}
+                    onToggleOpen={() => toggleProjectOpen(group.id, idx === 0)}
+                    onMoveProject={handleMoveProject}
+                    theme={theme}
+                    layout={layout}
+                    relativeTime={relativeTime}
+                  />
 
                   <Pressable
                     accessibilityRole="button"
@@ -2210,95 +2507,26 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
                           }}
                         >
                           {isManualSessions ? (
-                            <View style={{ flexDirection: "row", alignItems: "center", gap: 2, paddingLeft: 4 }}>
-                              <View
-                                {...({
-                                  draggable: true,
-                                  onDragStart: (e: any) => {
-                                    e.dataTransfer.setData("text/plain", chat.id);
-                                    e.dataTransfer.effectAllowed = "move";
-                                    setDraggingSessionId(chat.id);
-                                  },
-                                  onDragEnd: () => {
-                                    setDraggingSessionId(null);
-                                    setDragOverSessionId(null);
-                                  },
-                                  onTouchStart: () => handleTouchStartSession(chat.id),
-                                  onTouchMove: handleTouchMoveSession,
-                                  onTouchEnd: () => handleTouchEndSession(group.id),
-                                  onTouchCancel: () => handleTouchEndSession(group.id),
-                                } as any)}
-                                style={{
-                                  paddingHorizontal: layout.compact ? 5 : 3,
-                                  paddingVertical: layout.compact ? 6 : 4,
-                                  touchAction: "none",
-                                  cursor: "grab",
-                                  alignItems: "center",
-                                  justifyContent: "center",
-                                }}
-                              >
-                                <Text style={{ color: c.foregroundMuted, fontSize: layout.compact ? 14 : 12, userSelect: "none" }}>⠿</Text>
-                              </View>
-                              <View style={{ flexDirection: "column", gap: 2 }}>
-                                <Pressable
-                                  accessibilityRole="button"
-                                  accessibilityLabel="Переместить сессию выше"
-                                  hitSlop={{ top: 8, bottom: 4, left: 8, right: 8 }}
-                                  disabled={chatIdx === 0}
-                                  onPress={() => void handleMoveSession(group.id, chat.id, -1)}
-                                  style={({ pressed }) => ({
-                                    width: layout.compact ? 26 : 20,
-                                    height: layout.compact ? 18 : 14,
-                                    borderRadius: 4,
-                                    alignItems: "center",
-                                    justifyContent: "center",
-                                    backgroundColor: c.surface2,
-                                    borderWidth: 1,
-                                    borderColor: c.border,
-                                    opacity: chatIdx === 0 ? 0.25 : pressed ? 0.6 : 0.85,
-                                  })}
-                                >
-                                  <Text style={{ color: c.foreground, fontSize: 9, fontWeight: "700", lineHeight: 9 }}>▲</Text>
-                                </Pressable>
-                                <Pressable
-                                  accessibilityRole="button"
-                                  accessibilityLabel="Переместить сессию ниже"
-                                  hitSlop={{ top: 4, bottom: 8, left: 8, right: 8 }}
-                                  disabled={chatIdx === displayedChats.length - 1}
-                                  onPress={() => void handleMoveSession(group.id, chat.id, 1)}
-                                  style={({ pressed }) => ({
-                                    width: layout.compact ? 26 : 20,
-                                    height: layout.compact ? 18 : 14,
-                                    borderRadius: 4,
-                                    alignItems: "center",
-                                    justifyContent: "center",
-                                    backgroundColor: c.surface2,
-                                    borderWidth: 1,
-                                    borderColor: c.border,
-                                    opacity: chatIdx === displayedChats.length - 1 ? 0.25 : pressed ? 0.6 : 0.85,
-                                  })}
-                                >
-                                  <Text style={{ color: c.foreground, fontSize: 9, fontWeight: "700", lineHeight: 9 }}>▼</Text>
-                                </Pressable>
-                              </View>
+                            <View style={{ paddingLeft: 4 }}>
+                              <DragGripHandle
+                                id={chat.id}
+                                index={chatIdx}
+                                total={displayedChats.length}
+                                onMoveDelta={(id, delta) => void handleMoveSession(group.id, id, delta)}
+                                isCompact={layout.compact}
+                                theme={theme}
+                                label="сессию"
+                              />
                             </View>
                           ) : null}
 
-                          <Pressable
-                            accessibilityRole="button"
-                            onPress={() => jumpToWorkspace(chat.id)}
-                            style={({ pressed }) => ({
-                              flex: 1,
-                              minWidth: 0,
-                              flexDirection: "row",
-                              alignItems: "center",
-                              gap: 8,
-                              paddingVertical: layout.compact ? 11 : 9,
-                              paddingLeft: 9,
-                              paddingRight: 8,
-                              borderRadius: 9,
-                              backgroundColor: pressed ? c.surface2 : undefined,
-                            })}
+                          <SessionRowPressable
+                            chatId={chat.id}
+                            isManual={isManualSessions}
+                            onJump={() => jumpToWorkspace(chat.id)}
+                            onMoveSession={(id, delta) => void handleMoveSession(group.id, id, delta)}
+                            theme={theme}
+                            layout={layout}
                           >
                             <SessionStatusIndicator
                               bucket={bucket}
@@ -2364,7 +2592,7 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
                             {isPinned ? (
                               <Icon name="Pin" size={13} color={c.accent} />
                             ) : null}
-                          </Pressable>
+                          </SessionRowPressable>
 
                           <Pressable
                             accessibilityRole="button"
