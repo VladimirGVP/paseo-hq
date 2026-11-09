@@ -1,4 +1,4 @@
-import { formatUsageAmount } from "./amount.shared";
+import { formatUsageAmount } from "./amount.shared.ts";
 import type {
   UsageBalanceReading,
   UsageDisplay,
@@ -7,7 +7,7 @@ import type {
   UsageQuotaReading,
   UsageReading,
   UsageWindow,
-} from "./limits.shared";
+} from "./limits.shared.ts";
 
 /**
  * The composer rail is a glance, not a screen. Everything here answers one
@@ -69,8 +69,9 @@ const SUGGESTED_MATCH_SPECS: Record<string, readonly string[]> = {
   cursor: ["cursor", "omp:cursor"],
   grok: ["omp:grok"],
   xai: ["omp:xai", "pi:xai", "opencode:xai"],
-  deepseek: ["omp:deepseek", "pi:deepseek", "opencode:deepseek"],
-  "deepseek-rate": ["omp:deepseek", "pi:deepseek", "opencode:deepseek"],
+  deepseek: ["deepseek-harness", "omp:deepseek", "pi:deepseek", "opencode:deepseek"],
+  "deepseek-account": ["deepseek-harness", "omp:deepseek", "pi:deepseek", "opencode:deepseek"],
+  "deepseek-rate": ["deepseek-harness", "omp:deepseek", "pi:deepseek", "opencode:deepseek"],
   kimi: ["omp:kimi", "pi:kimi-coding", "opencode:kimi-for-coding"],
   moonshot: ["omp:moonshot", "pi:moonshotai", "opencode:moonshotai"],
   "moonshot-cn": ["pi:moonshotai-cn", "opencode:moonshotai-cn"],
@@ -165,8 +166,11 @@ export function matchesPillSelection(
   const harness = selection.provider?.toLowerCase() ?? null;
   const qualifiedModel = selection.model?.toLowerCase() ?? null;
   const separator = qualifiedModel?.indexOf("/") ?? -1;
-  const provider =
+  const rawProvider =
     qualifiedModel !== null && separator >= 0 ? qualifiedModel.slice(0, separator) : null;
+  const provider =
+    rawProvider ??
+    (harness?.includes("deepseek") || qualifiedModel?.startsWith("deepseek") ? "deepseek" : null);
   const model =
     qualifiedModel !== null && separator >= 0
       ? qualifiedModel.slice(separator + 1)
@@ -214,9 +218,27 @@ export type UsagePillReading = UsageQuotaReading | UsageBalanceReading;
  */
 export function resolvePillSettings(
   display: UsageDisplay | undefined,
+  providerId?: string,
 ): ResolvedPillSettings | null {
   const pill = display?.pill;
+  if (pill?.enabled === false) {
+    return null;
+  }
   if (!pill?.enabled) {
+    if (
+      providerId === "deepseek" ||
+      providerId === "deepseek-account" ||
+      providerId === "deepseek-harness"
+    ) {
+      return {
+        order: display?.order ?? 3,
+        style: display?.style === "ring" ? "ring" : "ring",
+        value: display?.value === "used" ? "used" : "remaining",
+        reading: null,
+        label: "none",
+        readout: "amount",
+      };
+    }
     return null;
   }
   return {
@@ -345,7 +367,9 @@ function amountText(reading: UsagePillReading, settings: ResolvedPillSettings): 
       : formatUsageAmount(reading.remaining, reading.unit, reading.currency);
   }
   if (reading.total === null || reading.remaining === null) {
-    return null;
+    return reading.remaining === null
+      ? null
+      : formatUsageAmount(reading.remaining, reading.unit, reading.currency);
   }
   return formatUsageAmount(reading.total - reading.remaining, reading.unit, reading.currency);
 }
@@ -476,15 +500,28 @@ export function selectComposerPills(
     if (provider.status === "disabled") {
       continue;
     }
-    const settings = resolvePillSettings(provider.display);
+    const settings = resolvePillSettings(provider.display, provider.providerId);
     if (settings === null) {
       continue;
     }
+    const pill = provider.display.pill ?? {
+      enabled: true,
+      style: "ring",
+      value: "remaining",
+      label: "none",
+      readout: "amount",
+      visibility: "matching",
+      matchRules: [
+        { harness: "deepseek-harness" },
+        { provider: "deepseek" },
+        { model: "deepseek*" },
+      ],
+    };
     entries.push({
       providerId: provider.providerId,
       providerLabel: provider.label,
       settings,
-      pill: provider.display.pill,
+      pill,
     });
   }
   return entries.sort(comparePillEntries);

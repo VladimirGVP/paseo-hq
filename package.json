@@ -25,6 +25,10 @@
     "typecheck": "tsc --noEmit",
     "test": "node --test shared/*.test.mjs server/*.test.mjs client/*.test.mjs"
   },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "^1.4.0",
+    "yaml": "^2.9.1"
+  },
   "devDependencies": {
     "@getpaseo/plugin": ">=0.15.0",
     "@tanstack/react-query": "^5.107.1",

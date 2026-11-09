@@ -239,6 +239,17 @@ export const sessionTransferRpc = defineRpc({
   }),
 });
 
+export const pluginSyncRpc = defineRpc({
+  name: "sidebar.plugin-sync",
+  input: z.object({}),
+  output: z.object({
+    success: z.boolean(),
+    updated: z.boolean(),
+    message: z.string(),
+    details: z.string().optional(),
+  }),
+});
+
 export * from "./artifacts-contracts";
 
 

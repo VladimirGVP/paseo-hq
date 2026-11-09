@@ -661,6 +661,68 @@ const PRESET_DEFINITIONS: Record<string, UsageProvider> = {
         currencyPath: "balance_infos[0].currency",
       },
     ],
+    display: {
+      order: 3,
+      value: "remaining",
+      pill: {
+        enabled: true,
+        style: "ring",
+        value: "remaining",
+        label: "none",
+        readout: "amount",
+        visibility: "matching",
+        matchRules: [
+          { harness: "deepseek-harness" },
+          { provider: "deepseek" },
+          { model: "deepseek*" },
+        ],
+      },
+    },
+  }),
+
+  "deepseek-account": definePreset({
+    label: "DeepSeek Harness - аккаунт",
+    icon: { kind: "monogram", text: "DS", color: "#3B82F6" },
+    description: "Бонус и пополнения аккаунта без API-ключа",
+    source: {
+      kind: "command",
+      command: [
+        "/usr/bin/python3",
+        "/home/agent/repos/vps-agent/infra/enaigma-paseo/deepseek-account-usage.py",
+      ],
+    },
+    readings: [
+      {
+        id: "wallet",
+        label: "Баланс",
+        kind: "balance",
+        unit: "usd",
+        each: {
+          path: "wallets",
+          idPath: "id",
+          labelPath: "label",
+        },
+        remainingPath: "remaining",
+        currencyPath: "currency",
+      },
+    ],
+    display: {
+      order: 3,
+      value: "remaining",
+      pill: {
+        enabled: true,
+        style: "ring",
+        value: "remaining",
+        label: "none",
+        readout: "amount",
+        visibility: "matching",
+        matchRules: [
+          { harness: "deepseek-harness" },
+          { provider: "deepseek" },
+          { model: "deepseek*" },
+        ],
+      },
+    },
   }),
 
   "deepseek-rate": definePreset({

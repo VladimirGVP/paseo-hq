@@ -30,6 +30,7 @@ import {
 import type { PaseoProviderSnapshotResult, PaseoAgentListResult, PaseoProject, PaseoWorkspace } from "@getpaseo/client";
 import {
   panelSettingsRpc,
+  pluginSyncRpc,
   projectAddRpc,
   projectCandidatesRpc,
   projectRemoveRpc,
@@ -770,6 +771,7 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
   const removeProject = useRpc(projectRemoveRpc);
   const updatePanelSettings = useRpc(panelSettingsRpc);
   const transferSession = useRpc(sessionTransferRpc);
+  const syncPluginRpc = useRpc(pluginSyncRpc);
 
   const [projects, setProjects] = useState<PaseoProject[]>([]);
   const [workspaces, setWorkspaces] = useState<PaseoWorkspace[]>([]);
@@ -790,6 +792,25 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
   const [panelSettingsOpen, setPanelSettingsOpen] = useState(false);
   const [savingPanelSettings, setSavingPanelSettings] = useState(false);
   const [draftHeaderTitle, setDraftHeaderTitle] = useState("Штаб");
+  const [syncingPlugin, setSyncingPlugin] = useState(false);
+  const [syncResult, setSyncResult] = useState<{ success: boolean; message: string } | null>(null);
+
+  const handleSyncPlugin = async () => {
+    if (syncingPlugin) return;
+    setSyncingPlugin(true);
+    setSyncResult(null);
+    try {
+      const res = await syncPluginRpc({});
+      setSyncResult({ success: res.success, message: res.message });
+    } catch (err: any) {
+      setSyncResult({
+        success: false,
+        message: `Ошибка синхронизации: ${err?.message || String(err)}`,
+      });
+    } finally {
+      setSyncingPlugin(false);
+    }
+  };
   const [expandedProjectIds, setExpandedProjectIds] = useState<Record<string, boolean>>({});
   const [expandedAllChats, setExpandedAllChats] = useState<Record<string, boolean>>({});
   const [showHiddenProjects, setShowHiddenProjects] = useState(false);
@@ -3184,6 +3205,62 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
                   onValueChange={(val) => void handleToggleHostMetrics(val)}
                   disabled={savingPanelSettings}
                 />
+              </View>
+            </SettingsSection>
+
+            <SettingsSection title="Обновление плагина">
+              <View
+                style={{
+                  padding: 12,
+                  borderRadius: 12,
+                  backgroundColor: c.surface2,
+                  borderWidth: 1,
+                  borderColor: c.border,
+                  gap: 10,
+                }}
+              >
+                <Text style={{ color: c.foregroundMuted, fontSize: 12, lineHeight: 17 }}>
+                  Синхронизация Штаба с последними обновлениями и изменениями в репозитории (GitHub).
+                </Text>
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={syncingPlugin}
+                  onPress={() => void handleSyncPlugin()}
+                  style={({ pressed }) => ({
+                    paddingVertical: 11,
+                    borderRadius: 9,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    backgroundColor: c.accent,
+                    opacity: syncingPlugin ? 0.5 : pressed ? 0.85 : 1,
+                  })}
+                >
+                  <Text style={{ color: "#FFFFFF", fontSize: 14, fontWeight: "600" }}>
+                    {syncingPlugin ? "Синхронизация..." : "Синхронизировать с репозиторием"}
+                  </Text>
+                </Pressable>
+                {syncResult ? (
+                  <View
+                    style={{
+                      padding: 10,
+                      borderRadius: 8,
+                      backgroundColor: c.surface1,
+                      borderWidth: 1,
+                      borderColor: syncResult.success ? c.statusSuccess : c.statusDanger,
+                    }}
+                  >
+                    <Text
+                      style={{
+                        color: syncResult.success ? c.statusSuccess : c.statusDanger,
+                        fontSize: 12,
+                        fontWeight: "500",
+                        lineHeight: 16,
+                      }}
+                    >
+                      {syncResult.message}
+                    </Text>
+                  </View>
+                ) : null}
               </View>
             </SettingsSection>
           </View>

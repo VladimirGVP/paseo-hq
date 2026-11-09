@@ -7,11 +7,12 @@ import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import {
   hostStatsRpc,
   panelSettingsRpc,
+  pluginSyncRpc,
   projectAddRpc,
   projectCandidatesRpc,
   projectMetaSchema,
@@ -73,6 +74,8 @@ import { cloneAndCreateWorkspace } from "./server/git-service.server";
 import { repoCacheService } from "./server/git-cache.server";
 import { read as readServicesRpc } from "./shared/services-contracts";
 import { readServices } from "./server/services.server";
+import { createDeepSeekHarnessProvider } from "./server/deepseek/provider";
+import { createDeepSeekUsageSource } from "./server/deepseek/usage";
 
 const execFileAsync = promisify(execFile);
 const paseoHome = process.env.PASEO_HOME || join(homedir(), ".paseo");
@@ -447,6 +450,79 @@ function normalizeCloneUrl(repoUrl: string): string {
     return `https://github.com/${trimmed}.git`;
   }
   return trimmed;
+}
+
+async function syncPluginUpdates(): Promise<{
+  success: boolean;
+  updated: boolean;
+  message: string;
+  details?: string;
+}> {
+  const candidateBinaries = [
+    "paseo",
+    "/home/agent/.nvm/versions/node/v24.20.0/bin/paseo",
+    "/home/zor/.local/paseo/node_modules/.bin/paseo",
+    "/usr/local/bin/paseo",
+    "/usr/bin/paseo",
+    join(dirname(process.execPath), "paseo"),
+  ];
+
+  let paseoBin: string | null = null;
+  for (const bin of candidateBinaries) {
+    try {
+      await execFileAsync(bin, ["--version"]);
+      paseoBin = bin;
+      break;
+    } catch {
+      // try next
+    }
+  }
+
+  if (paseoBin) {
+    try {
+      const { stdout, stderr } = await execFileAsync(
+        paseoBin,
+        ["plugin", "update", "paseo-hq", "--yes"],
+        { timeout: 60_000, env: process.env },
+      );
+      const out = (stdout + "\n" + stderr).trim();
+      const updated = out.includes("updated") || out.includes("→");
+      return {
+        success: true,
+        updated,
+        message: updated
+          ? "Штаб успешно синхронизирован и обновлен до последней версии"
+          : "У вас уже установлена последняя версия Штаба",
+        details: out,
+      };
+    } catch (err: any) {
+      console.warn("[paseo-hq] paseo plugin update failed, trying git fallback:", err?.message);
+    }
+  }
+
+  try {
+    const { stdout, stderr } = await execFileAsync("git", ["pull", "origin", "main"], {
+      cwd: dirname(fileURLToPath(import.meta.url)),
+      timeout: 30_000,
+    });
+    const out = (stdout + "\n" + stderr).trim();
+    const updated = !out.includes("Already up to date") && !out.includes("Уже актуально");
+    return {
+      success: true,
+      updated,
+      message: updated
+        ? "Штаб успешно обновлен из репозитория через Git"
+        : "У вас уже последняя версия Штаба",
+      details: out,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      updated: false,
+      message: `Не удалось синхронизировать обновления: ${err?.message || String(err)}`,
+      details: err?.stack,
+    };
+  }
 }
 
 export default function contribute(server: PluginServerContext) {
@@ -1010,9 +1086,24 @@ export default function contribute(server: PluginServerContext) {
     return { ok };
   });
 
+  server.handle(pluginSyncRpc, async () => {
+    return await syncPluginUpdates();
+  });
+
   const removeUsage = contributeUsageServer(server);
 
+  const deepseekProvider = createDeepSeekHarnessProvider();
+  server.registerProvider(deepseekProvider);
+  server.registerUsageSource(createDeepSeekUsageSource());
+
   return () => {
+    try {
+      void deepseekProvider.dispose().catch((err) => {
+        console.warn("[paseo-hq] deepseek provider dispose error", err);
+      });
+    } catch {
+      // ignore
+    }
     disposeTitles();
     disposeTurnBefore();
     disposeTurnAfter();

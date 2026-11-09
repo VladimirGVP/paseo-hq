@@ -47,6 +47,7 @@ import {
   USAGE_LIMITS_QUERY_KEY,
   type UsageIcon,
   type UsageProviderSnapshot,
+  type UsageReading,
   type UsageWindow,
 } from "../shared/limits.shared";
 import { CodexBankedResetAction } from "./codex-reset.client";
@@ -321,6 +322,38 @@ function findProvider(
   return providers?.find((provider) => provider.providerId === providerId) ?? null;
 }
 
+function formatReadingRowValue(reading: UsageReading): string {
+  if (reading.kind === "balance") {
+    if (reading.remaining !== null) {
+      const formatted = formatUsageAmount(reading.remaining, reading.unit, reading.currency);
+      if (reading.total !== null) {
+        return `${formatted} of ${formatUsageAmount(reading.total, reading.unit, reading.currency)}`;
+      }
+      return formatted;
+    }
+    return EM_DASH;
+  }
+  if (reading.kind === "quota") {
+    if (reading.percent !== null) {
+      return `${Math.round(reading.percent)}%`;
+    }
+    if (reading.used !== null && reading.limit !== null) {
+      return `${formatUsageAmount(reading.used, reading.unit)} / ${formatUsageAmount(reading.limit, reading.unit)}`;
+    }
+    if (reading.remaining !== null) {
+      return `${formatUsageAmount(reading.remaining, reading.unit)} left`;
+    }
+    if (reading.used !== null) {
+      return `${formatUsageAmount(reading.used, reading.unit)} used`;
+    }
+    return EM_DASH;
+  }
+  if (reading.kind === "rate") {
+    return reading.multiplier !== null ? `${reading.state} (×${reading.multiplier})` : reading.state;
+  }
+  return EM_DASH;
+}
+
 /**
  * The body a pill's popover shows: the tracked reading in full, then one row
  * per other window so a weekly allowance is one glance away from a session
@@ -402,21 +435,45 @@ function PillCard({
           />
         </Pressable>
       </View>
-      {headline === null ? null : <Text style={headlineStyle}>{headline}</Text>}
-      {metrics === null || metrics.percentFilled === null ? null : (
-        <View style={styles.cardMeter}>
-          <UsageMeter
-            percentUsed={metrics.percentUsed ?? 0}
-            percentFilled={metrics.percentFilled}
-            pacePercent={quotaPacePercent(trackedWindow, now)}
-            style={CARD_METER_STYLE}
-            trackColor={theme.colors.surface0}
-            theme={theme}
-            compact
-          />
-        </View>
-      )}
-      {amounts === null ? null : <Text style={styles.cardDetail}>{amounts}</Text>}
+      <View style={{ gap: 6, marginVertical: 4 }}>
+        {provider.readings.length === 0 ? (
+          <Text style={styles.cardDetail}>Нет данных о лимитах</Text>
+        ) : (
+          provider.readings.map((reading) => {
+            const val = formatReadingRowValue(reading);
+            let percentFilled: number | null = null;
+            let percentUsed = 0;
+            if (reading.kind === "quota") {
+              percentFilled = reading.percent;
+              percentUsed = reading.percent ?? 0;
+            } else if (reading.kind === "balance") {
+              percentFilled = reading.percentRemaining;
+              percentUsed = reading.percentRemaining !== null ? 100 - reading.percentRemaining : 0;
+            }
+            return (
+              <View key={reading.id} style={styles.cardWindow}>
+                <View style={styles.cardRow}>
+                  <Text numberOfLines={1} style={[styles.cardDetail, { fontWeight: "600", color: theme.colors.foreground }]}>
+                    {reading.label}
+                  </Text>
+                  <Text style={[styles.cardHeadline, { fontSize: 13, color: tone }]}>{val}</Text>
+                </View>
+                {percentFilled !== null ? (
+                  <UsageMeter
+                    percentUsed={percentUsed}
+                    percentFilled={percentFilled}
+                    pacePercent={reading.kind === "quota" ? quotaPacePercent(reading.window, now) : null}
+                    style={CARD_METER_STYLE}
+                    trackColor={theme.colors.surface0}
+                    theme={theme}
+                    compact
+                  />
+                ) : null}
+              </View>
+            );
+          })
+        )}
+      </View>
       {resets === null ? null : <Text style={styles.cardDetail}>{resets}</Text>}
       {provider.notice === null ? null : <Text style={styles.cardDetail}>{provider.notice}</Text>}
       {provider.error === null ? null : <Text style={styles.cardDetail}>{provider.error}</Text>}
@@ -788,7 +845,7 @@ export function pillIconFor(providerId: string): ComponentType<PluginButtonIconP
       refetchOnWindowFocus: Platform.OS === "web",
     });
     const provider = findProvider(data?.providers, providerId);
-    const settings = provider === null ? null : resolvePillSettings(provider.display);
+    const settings = provider === null ? null : resolvePillSettings(provider.display, provider.providerId);
     const reading =
       provider === null || settings === null
         ? null
@@ -811,12 +868,7 @@ export function pillIconFor(providerId: string): ComponentType<PluginButtonIconP
      * reading with no ceiling to draw: the mark alone still says which
      * provider the pill belongs to.
      */
-    if (
-      settings === null ||
-      settings.style === "none" ||
-      metrics === null ||
-      metrics.percentFilled === null
-    ) {
+    if (settings === null || settings.style === "none" || metrics === null) {
       return <PillMark {...mark} styles={styles.mark} />;
     }
     if (settings.style === "ring") {
@@ -824,7 +876,7 @@ export function pillIconFor(providerId: string): ComponentType<PluginButtonIconP
         <View style={styles.ring}>
           <UsageMeter
             percentUsed={metrics.percentUsed ?? 0}
-            percentFilled={metrics.percentFilled}
+            percentFilled={metrics.percentFilled ?? 100}
             pacePercent={null}
             style={RAIL_METER_STYLE}
             scale="rail"
@@ -837,6 +889,9 @@ export function pillIconFor(providerId: string): ComponentType<PluginButtonIconP
           </View>
         </View>
       );
+    }
+    if (metrics.percentFilled === null) {
+      return <PillMark {...mark} styles={styles.mark} />;
     }
     return (
       <View style={styles.bar}>
@@ -871,7 +926,7 @@ export function pillContentFor(providerId: string): ComponentType<PluginButtonCo
       refetchOnWindowFocus: Platform.OS === "web",
     });
     const provider = findProvider(data?.providers, providerId);
-    const settings = provider === null ? null : resolvePillSettings(provider.display);
+    const settings = provider === null ? null : resolvePillSettings(provider.display, provider.providerId);
     const reading =
       provider === null || settings === null
         ? null
