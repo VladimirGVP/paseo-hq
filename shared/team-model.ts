@@ -58,6 +58,10 @@ export const taskSchema = z.object({
   agentId: z.string().nullable().default(null),
   workspaceId: z.string().nullable().default(null),
   externalUrl: z.string().nullable().default(null),
+  /** Личная задача: не делится с остальной командой. */
+  personal: z.boolean().default(false),
+  /** Кто создал личную задачу (id члена команды), когда это имеет значение. */
+  ownerId: z.string().nullable().default(null),
 });
 
 export type TeamTask = z.infer<typeof taskSchema>;

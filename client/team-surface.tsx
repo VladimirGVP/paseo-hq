@@ -8,6 +8,7 @@ import {
   SettingsAction,
   SettingsInput,
   SettingsSelect,
+  SettingsSwitch,
   TextInput,
   useToast,
 } from "@getpaseo/plugin/client/react-native";
@@ -136,6 +137,8 @@ function emptyTask(): TeamTask {
     agentId: null,
     workspaceId: null,
     externalUrl: null,
+    personal: false,
+    ownerId: null,
   };
 }
 
@@ -153,6 +156,7 @@ export function TeamSurface({ theme, layout, host, navigation }: PluginSurfacePr
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [tab, setTab] = useState<"team" | "tasks">("team");
+  const [hidePersonal, setHidePersonal] = useState(false);
   const [connectUrl, setConnectUrl] = useState("");
   const [connectBranch, setConnectBranch] = useState("main");
   const [connectError, setConnectError] = useState<string | null>(null);
@@ -332,6 +336,24 @@ export function TeamSurface({ theme, layout, host, navigation }: PluginSurfacePr
     if (await persist(board, [], [member.id])) setMemberDraft(undefined);
   };
 
+  const addWorkerMember = async (worker: WorkerInfo) => {
+    await saveMember({
+      id: newId("mem"),
+      kind: "container",
+      name: worker.name,
+      role: worker.role || "",
+      avatar: worker.avatar || "🧑‍💻",
+      hostServerId: null,
+      agentId: null,
+      provider: null,
+      cwd: null,
+      container: worker.container,
+      cgroupPath: null,
+      activityPath: null,
+      updatedAt: nowIso(),
+    });
+  };
+
   const saveTask = async (task: TeamTask) => {
     const next = { ...task, updatedAt: nowIso() };
     const board: TeamBoard = {
@@ -407,7 +429,10 @@ export function TeamSurface({ theme, layout, host, navigation }: PluginSurfacePr
     }
   };
 
-  const columns = useMemo(() => taskColumns(state.board), [state.board]);
+  const columns = useMemo(() => {
+    const tasks = hidePersonal ? state.board.tasks.filter((t) => !t.personal) : state.board.tasks;
+    return taskColumns({ ...state.board, tasks });
+  }, [state.board, hidePersonal]);
   const counts = useMemo(() => memberTaskCounts(state.board), [state.board]);
   const memberOptions = useMemo(
     () => [
@@ -415,6 +440,11 @@ export function TeamSurface({ theme, layout, host, navigation }: PluginSurfacePr
       ...state.board.members.map((m) => ({ label: `${m.avatar} ${m.name}`, value: m.id })),
     ],
     [state.board.members],
+  );
+
+  const availableWorkers = useMemo(
+    () => workers.filter((w) => !state.board.members.some((m) => m.kind === "container" && m.container === w.container)),
+    [workers, state.board.members],
   );
 
   const renderConnect = () => (
@@ -550,7 +580,10 @@ export function TeamSurface({ theme, layout, host, navigation }: PluginSurfacePr
           gap: 7,
         }}
       >
-        <Text style={{ color: c.foreground, fontSize: 13.5, fontWeight: "600" }}>{task.title}</Text>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+          {task.personal ? <Icon name="Lock" size={12} color={c.foregroundMuted} /> : null}
+          <Text style={{ color: c.foreground, fontSize: 13.5, fontWeight: "600", flexShrink: 1 }}>{task.title}</Text>
+        </View>
         {task.description ? (
           <Text numberOfLines={2} style={{ color: c.foregroundMuted, fontSize: 11.5 }}>
             {task.description}
@@ -804,6 +837,55 @@ export function TeamSurface({ theme, layout, host, navigation }: PluginSurfacePr
                 {state.board.members.map(renderMemberCard)}
               </View>
             )}
+
+            {availableWorkers.length > 0 ? (
+              <View style={{ gap: 8, paddingTop: 4 }}>
+                <Text style={{ color: c.foregroundMuted, fontSize: 12, fontWeight: "700" }}>
+                  Контейнеры с монитора, ещё не в команде
+                </Text>
+                {availableWorkers.map((w) => (
+                  <View
+                    key={w.id}
+                    style={{
+                      flexDirection: "row",
+                      alignItems: "center",
+                      gap: 10,
+                      paddingHorizontal: 12,
+                      paddingVertical: 9,
+                      borderRadius: 9,
+                      backgroundColor: c.surface2,
+                      borderWidth: 1,
+                      borderColor: c.border,
+                    }}
+                  >
+                    <Text style={{ fontSize: 16 }}>{w.avatar}</Text>
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <Text numberOfLines={1} style={{ color: c.foreground, fontSize: 13.5, fontWeight: "600" }}>
+                        {w.name}
+                      </Text>
+                      <Text numberOfLines={1} style={{ color: c.foregroundMuted, fontSize: 11.5 }}>
+                        {w.container} · {w.role || "контейнер"}
+                      </Text>
+                    </View>
+                    <Pressable
+                      accessibilityRole="button"
+                      disabled={busy}
+                      onPress={() => void addWorkerMember(w)}
+                      style={({ pressed }) => ({
+                        paddingHorizontal: 10,
+                        paddingVertical: 6,
+                        borderRadius: 7,
+                        backgroundColor: c.accent,
+                        opacity: pressed || busy ? 0.8 : 1,
+                      })}
+                    >
+                      <Text style={{ color: "#FFFFFF", fontSize: 12, fontWeight: "600" }}>В команду</Text>
+                    </Pressable>
+                  </View>
+                ))}
+              </View>
+            ) : null}
+
             <View style={{ gap: 6, paddingTop: 8 }}>
               <Text style={{ color: c.foregroundMuted, fontSize: 11.5 }}>
                 Задач всего: {state.board.tasks.length}, в работе:{" "}
@@ -816,27 +898,50 @@ export function TeamSurface({ theme, layout, host, navigation }: PluginSurfacePr
           </View>
         ) : (
           <View style={{ gap: 12 }}>
-            <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+            <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
               <Text style={{ color: c.foreground, fontSize: 14, fontWeight: "700" }}>
                 {state.board.tasks.length} задач
               </Text>
-              <Pressable
-                accessibilityRole="button"
-                onPress={() => setTaskDraft(null)}
-                style={({ pressed }) => ({
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: 6,
-                  paddingHorizontal: 12,
-                  paddingVertical: 7,
-                  borderRadius: 8,
-                  backgroundColor: c.accent,
-                  opacity: pressed ? 0.85 : 1,
-                })}
-              >
-                <Icon name="Plus" size={15} color="#FFFFFF" />
-                <Text style={{ color: "#FFFFFF", fontSize: 12.5, fontWeight: "600" }}>Задача</Text>
-              </Pressable>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => setHidePersonal((v) => !v)}
+                  style={({ pressed }) => ({
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 6,
+                    paddingHorizontal: 10,
+                    paddingVertical: 6,
+                    borderRadius: 8,
+                    borderWidth: 1,
+                    borderColor: c.border,
+                    backgroundColor: hidePersonal ? c.surface2 : undefined,
+                    opacity: pressed ? 0.7 : 1,
+                  })}
+                >
+                  <Icon name="Lock" size={13} color={hidePersonal ? c.accent : c.foregroundMuted} />
+                  <Text style={{ color: hidePersonal ? c.accent : c.foregroundMuted, fontSize: 12 }}>
+                    Скрыть личные
+                  </Text>
+                </Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => setTaskDraft(null)}
+                  style={({ pressed }) => ({
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 6,
+                    paddingHorizontal: 12,
+                    paddingVertical: 7,
+                    borderRadius: 8,
+                    backgroundColor: c.accent,
+                    opacity: pressed ? 0.85 : 1,
+                  })}
+                >
+                  <Icon name="Plus" size={15} color="#FFFFFF" />
+                  <Text style={{ color: "#FFFFFF", fontSize: 12.5, fontWeight: "600" }}>Задача</Text>
+                </Pressable>
+              </View>
             </View>
             {renderBoard()}
           </View>
@@ -846,6 +951,7 @@ export function TeamSurface({ theme, layout, host, navigation }: PluginSurfacePr
       <MemberModal
         draft={memberDraft}
         theme={theme}
+        workers={workers}
         hosts={[
           { label: "Текущий хост", value: "" },
           ...Array.from(connectedHosts)
@@ -915,6 +1021,7 @@ function Field({
 function MemberModal({
   draft,
   theme,
+  workers,
   hosts,
   onClose,
   onSave,
@@ -922,6 +1029,7 @@ function MemberModal({
 }: {
   draft: TeamMember | null | undefined;
   theme: PluginTheme;
+  workers: WorkerInfo[];
   hosts: { label: string; value: string }[];
   onClose: () => void;
   onSave: (member: TeamMember) => void;
@@ -988,22 +1096,28 @@ function MemberModal({
             </>
           ) : null}
           {form.kind === "container" ? (
-            <>
-              <Field
-                label="Контейнер"
-                value={form.container ?? ""}
-                onChangeText={(value) => update({ container: value.trim() || null })}
-                placeholder="zor-work"
-                theme={theme}
-              />
-              <Field
-                label="Cgroup"
-                value={form.cgroupPath ?? ""}
-                onChangeText={(value) => update({ cgroupPath: value.trim() || null })}
-                placeholder="/sys/fs/cgroup/lxc.payload.zor-work"
-                theme={theme}
-              />
-            </>
+            <SettingsSelect
+              label="Контейнер"
+              hint="Контейнеры берутся из монитора workers.json — достаточно выбрать по названию"
+              value={form.container ?? ""}
+              options={[
+                { label: "Выберите контейнер", value: "" },
+                ...workers.map((w) => ({ label: `${w.avatar} ${w.name} · ${w.container}`, value: w.container })),
+              ]}
+              onValueChange={(value) => {
+                const worker = workers.find((w) => w.container === value);
+                update({
+                  container: value || null,
+                  ...(worker
+                    ? {
+                        name: form.name.trim() ? form.name : worker.name,
+                        role: form.role.trim() ? form.role : worker.role,
+                        avatar: form.avatar !== "🙂" ? form.avatar : worker.avatar,
+                      }
+                    : {}),
+                });
+              }}
+            />
           ) : null}
           {!valid ? <Text style={{ color: c.statusWarning, fontSize: 12 }}>Укажите имя.</Text> : null}
           <View style={{ flexDirection: "row", gap: 10, justifyContent: "flex-end", paddingTop: 4 }}>
@@ -1136,6 +1250,12 @@ function TaskModal({
               { label: "Срочный", value: "2" },
             ]}
             onValueChange={(value) => update({ priority: Number(value) || 0 })}
+          />
+          <SettingsSwitch
+            label="Личная задача"
+            hint="Видна только в моей ленте, не для общей команды"
+            value={form.personal}
+            onValueChange={(value) => update({ personal: value })}
           />
           {assignee && assignee.kind === "paseo" && !assignee.provider ? (
             <Text style={{ color: c.statusWarning, fontSize: 12 }}>
