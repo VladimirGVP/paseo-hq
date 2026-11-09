@@ -86,7 +86,6 @@ interface StoredData {
   pinnedSessions: Record<string, number>;
   titledSessions: Record<string, number>;
   showHostMetrics: boolean;
-  showZorMetrics: boolean;
   headerTitle: string;
   projectsSortMode: "auto" | "manual";
   projectOrder: string[];
@@ -148,7 +147,6 @@ async function readStored(): Promise<StoredData> {
       pinnedSessions: parseNumberMap(raw.pinnedSessions),
       titledSessions: parseNumberMap(raw.titledSessions),
       showHostMetrics: typeof raw.showHostMetrics === "boolean" ? raw.showHostMetrics : true,
-      showZorMetrics: typeof raw.showZorMetrics === "boolean" ? raw.showZorMetrics : true,
       headerTitle: typeof raw.headerTitle === "string" && raw.headerTitle.trim() ? raw.headerTitle.trim() : "Штаб",
       projectsSortMode: raw.projectsSortMode === "manual" ? "manual" : "auto",
       projectOrder: Array.isArray(raw.projectOrder)
@@ -162,7 +160,6 @@ async function readStored(): Promise<StoredData> {
       pinnedSessions: {},
       titledSessions: {},
       showHostMetrics: true,
-      showZorMetrics: true,
       headerTitle: "Штаб",
       projectsSortMode: "auto",
       projectOrder: [],
@@ -180,7 +177,6 @@ async function saveStored(data: StoredData): Promise<void> {
     pinnedSessions: data.pinnedSessions,
     titledSessions: data.titledSessions,
     showHostMetrics: data.showHostMetrics,
-    showZorMetrics: data.showZorMetrics,
     headerTitle: data.headerTitle || "Штаб",
     projectsSortMode: data.projectsSortMode || "auto",
     projectOrder: data.projectOrder || [],
@@ -374,8 +370,6 @@ async function buildState(projectIds: string[]): Promise<SidebarState> {
     lastRunningAt: stored.lastRunningAt,
     pinnedSessions: stored.pinnedSessions,
     showHostMetrics: stored.showHostMetrics,
-    showZorMetrics: stored.showZorMetrics,
-    showWorkersMetrics: (stored as any).showWorkersMetrics ?? stored.showZorMetrics ?? true,
     headerTitle: stored.headerTitle || "Штаб",
     projectsSortMode: stored.projectsSortMode || "auto",
     projectOrder: stored.projectOrder || [],
@@ -591,8 +585,6 @@ export default function contribute(server: PluginServerContext) {
     async ({
       headerTitle,
       showHostMetrics,
-      showZorMetrics,
-      showWorkersMetrics,
       projectsSortMode,
       projectOrder,
       projectIds,
@@ -607,13 +599,6 @@ export default function contribute(server: PluginServerContext) {
         if (typeof showHostMetrics === "boolean") {
           stored.showHostMetrics = showHostMetrics;
           nextShow = showHostMetrics;
-        }
-        if (typeof showZorMetrics === "boolean") {
-          stored.showZorMetrics = showZorMetrics;
-        }
-        if (typeof showWorkersMetrics === "boolean") {
-          stored.showZorMetrics = showWorkersMetrics;
-          (stored as any).showWorkersMetrics = showWorkersMetrics;
         }
         if (projectsSortMode === "auto" || projectsSortMode === "manual") {
           stored.projectsSortMode = projectsSortMode;

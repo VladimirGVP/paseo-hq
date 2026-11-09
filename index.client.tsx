@@ -47,8 +47,8 @@ import { compareProjectOrder } from "./shared/project-order";
 import { GENERATOR_TITLE, titleModelOptions } from "./shared/title-models";
 import { TitleModelPicker } from "./client/title-model-picker.client";
 import { HostMetricsBar } from "./client/host-widget";
-import { WorkersMetricsBar, WorkersSurface } from "./client/workers-widget";
 import { TeamSurface } from "./client/team-surface";
+
 import { contributeComposerPills } from "./client/pills.client";
 import { contributeLimitAlerts } from "./client/limit-alerts.client";
 import { UsageLimitsPanel, UsageLimitsSurface } from "./client/limits.client";
@@ -781,8 +781,6 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
     lastRunningAt: {},
     pinnedSessions: {},
     showHostMetrics: true,
-    showZorMetrics: true,
-    showWorkersMetrics: true,
     headerTitle: "Штаб",
     projectsSortMode: "auto",
     projectOrder: [],
@@ -1279,28 +1277,6 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
     }
   };
 
-  const handleToggleZorMetrics = async (enabled: boolean) => {
-    if (savingPanelSettings) return;
-    setSavingPanelSettings(true);
-    setServerState((prev) => ({ ...prev, showZorMetrics: enabled }));
-    try {
-      const updated = await updatePanelSettings({
-        showZorMetrics: enabled,
-        projectIds: allGroups.map((g) => g.id),
-      });
-      setServerState(updated);
-      toast.show(
-        enabled ? "Показатели работников включены" : "Показатели работников скрыты",
-        { variant: "info" },
-      );
-    } catch (err) {
-      await reloadAll();
-      toast.error(err instanceof Error ? err.message : "Не удалось обновить настройки работников");
-    } finally {
-      setSavingPanelSettings(false);
-    }
-  };
-
   const handleToggleHostMetrics = async (enabled: boolean) => {
     if (savingPanelSettings) return;
     setSavingPanelSettings(true);
@@ -1489,10 +1465,9 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
   const headerMetricsHeight = useMemo(() => {
     let h = layout.compact ? 52 : 46;
     if (serverState.showHostMetrics) h += 40;
-    if (serverState.showZorMetrics) h += 40;
     const chromeAndSafeArea = layout.compact ? 90 : 80;
     return h + chromeAndSafeArea;
-  }, [layout.compact, serverState.showHostMetrics, serverState.showZorMetrics]);
+  }, [layout.compact, serverState.showHostMetrics]);
 
   const listMaxHeight = Math.max(200, windowHeight - headerMetricsHeight);
 
@@ -1741,15 +1716,6 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
           theme={theme}
           openPopover={openPopover}
           enabled={serverState.showHostMetrics}
-        />
-      ) : null}
-
-      {/* Компактная полоска ресурсов и активности работников команды */}
-      {serverState.showZorMetrics ? (
-        <WorkersMetricsBar
-          theme={theme}
-          openPopover={openPopover}
-          enabled={serverState.showZorMetrics}
         />
       ) : null}
 
@@ -3220,27 +3186,6 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
                 />
               </View>
             </SettingsSection>
-
-            <SettingsSection title="Работники и команда">
-              <View
-                style={{
-                  padding: 12,
-                  borderRadius: 12,
-                  backgroundColor: c.surface2,
-                  borderWidth: 1,
-                  borderColor: c.border,
-                  gap: 10,
-                }}
-              >
-                <SettingsSwitch
-                  label="Ресурсы и активность работников (Команда)"
-                  hint="Отображает компактную строку команды (Зорик, Серега) над проектами и подробную шторку (CPU, ОЗУ, процессы cgroup, 24-часовая активность агентов Paseo)."
-                  value={serverState.showZorMetrics}
-                  onValueChange={(val) => void handleToggleZorMetrics(val)}
-                  disabled={savingPanelSettings}
-                />
-              </View>
-            </SettingsSection>
           </View>
         </Modal.Content>
       </Modal>
@@ -3306,7 +3251,6 @@ export default function contribute(client: PluginClientContext) {
   const removeGitSurface = client.addSurface("git-workspace", GitWorkspaceSurface);
   const removeServicesSurface = client.addSurface("services", Services);
   const removeArtifactsSurface = client.addSurface("artifacts", ArtifactsSurface);
-  const removeWorkersSurface = client.addSurface("workers", WorkersSurface);
   const removeTeamSurface = client.addSurface("team", TeamSurface);
 
   const removeArtifactsTransformer = client.addTimelineTransformer({
@@ -3389,7 +3333,6 @@ export default function contribute(client: PluginClientContext) {
       removeGitSurface();
       removeServicesSurface();
       removeArtifactsSurface();
-      removeWorkersSurface();
       removeTeamSurface();
       removeArtifactsTransformer();
       removeArtifactsTextRenderer();
