@@ -62,6 +62,13 @@ import {
   ARTIFACT_BLOCK_KIND,
   ARTIFACT_TEXT_KIND,
 } from "./client/artifacts-segment";
+import {
+  BUCKET_PRIORITY,
+  deriveAgentBucket,
+  pickWorkspaceBucket,
+  resolveChatBucket,
+  type UiSessionBucket,
+} from "./client/session-buckets";
 import { z } from "zod";
 import { Markdown } from "@getpaseo/plugin/client/ui";
 
@@ -81,16 +88,7 @@ const DEFAULT_META: ProjectMeta = {
 };
 
 type AddProjectMode = "existing" | "create" | "clone";
-type UiSessionBucket = "needs_input" | "failed" | "running" | "attention" | "done";
 type AgentEntry = PaseoAgentListResult["entries"][number];
-
-const BUCKET_PRIORITY: Record<UiSessionBucket, number> = {
-  needs_input: 0,
-  failed: 1,
-  running: 2,
-  attention: 3,
-  done: 4,
-};
 
 interface ProjectGroup {
   id: string;
@@ -207,40 +205,6 @@ function chatTitle(w: PaseoWorkspace, agent?: AgentEntry["agent"]): string {
   const agTitle = (ag?.title || ag?.name || "").trim();
   if (agTitle) return agTitle;
   return "Новая сессия";
-}
-
-function deriveAgentBucket(entry: AgentEntry): UiSessionBucket {
-  const a = entry.agent;
-  if ((a.pendingPermissions?.length ?? 0) > 0 || a.attentionReason === "permission") {
-    return "needs_input";
-  }
-  if (a.status === "error" || a.attentionReason === "error") {
-    return "failed";
-  }
-  if (a.status === "running") {
-    return "running";
-  }
-  if (a.requiresAttention) {
-    return "attention";
-  }
-  return "done";
-}
-
-function resolveChatBucket(
-  w: PaseoWorkspace,
-  agentBucketByWorkspace: Record<string, UiSessionBucket>,
-): UiSessionBucket {
-  const fromWs: UiSessionBucket =
-    w.status === "needs_input"
-      ? "needs_input"
-      : w.status === "failed"
-        ? "failed"
-        : w.status === "running"
-          ? "running"
-          : "done";
-  const fromAgent = agentBucketByWorkspace[w.id];
-  if (!fromAgent) return fromWs;
-  return BUCKET_PRIORITY[fromAgent] < BUCKET_PRIORITY[fromWs] ? fromAgent : fromWs;
 }
 
 /**
@@ -917,11 +881,8 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
       if (entry.agent.archivedAt || entry.agent.internal) continue;
       const wsId = entry.agent.workspaceId;
       if (!wsId) continue;
-      const bucket = deriveAgentBucket(entry);
-      const prev = bucketMap[wsId];
-      if (!prev || BUCKET_PRIORITY[bucket] < BUCKET_PRIORITY[prev]) {
-        bucketMap[wsId] = bucket;
-      }
+      const bucket = deriveAgentBucket(entry.agent);
+      bucketMap[wsId] = pickWorkspaceBucket(bucketMap[wsId], bucket);
       const attMs = parseIsoMs(entry.agent.attentionTimestamp);
       const msgMs = parseIsoMs(entry.agent.lastUserMessageAt);
       if (entry.agent.title !== GENERATOR_TITLE && msgMs > (promptMap[wsId] ?? 0)) promptMap[wsId] = msgMs;
