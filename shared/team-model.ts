@@ -93,6 +93,12 @@ export function nextTaskStatus(status: TaskStatus): TaskStatus {
   return TASK_STATUSES[(index + 1) % TASK_STATUSES.length];
 }
 
+/** Шаг назад по статусу. Из бэклога назад некуда. */
+export function prevTaskStatus(status: TaskStatus): TaskStatus {
+  const index = TASK_STATUSES.indexOf(status);
+  return index <= 0 ? TASK_STATUSES[0] : TASK_STATUSES[index - 1];
+}
+
 export function taskColumns(board: TeamBoard): Record<TaskStatus, TeamTask[]> {
   const columns: Record<TaskStatus, TeamTask[]> = { backlog: [], doing: [], review: [], done: [] };
   for (const task of board.tasks) {

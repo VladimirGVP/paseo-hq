@@ -46,12 +46,11 @@ import {
   boardsListRpc,
 } from "./shared/team";
 import {
+  applyBoardChange,
+  boardView,
   connectBoard,
   disconnectBoard,
   listBoards,
-  readBoard,
-  readConfigs,
-  saveBoardById,
   syncBoard,
 } from "./server/team.server";
 
@@ -540,10 +539,8 @@ export default function contribute(server: PluginServerContext) {
   });
 
   server.handle(boardStateRpc, async ({ boardId }) => {
-    const cfg = (await readConfigs()).find((b) => b.id === boardId);
-    if (!cfg) return { board: { ...EMPTY_BOARD }, error: "доска не найдена", syncedAt: null };
     try {
-      const board = await readBoard(cfg);
+      const board = await boardView(boardId);
       return { board, error: null, syncedAt: board.updatedAt || null };
     } catch (err) {
       return {
@@ -569,7 +566,7 @@ export default function contribute(server: PluginServerContext) {
 
   server.handle(boardSaveRpc, async ({ boardId, board, removedTaskIds, removedMemberIds }) => {
     try {
-      const saved = await saveBoardById(boardId, board, removedTaskIds, removedMemberIds);
+      const saved = await applyBoardChange(boardId, board, removedTaskIds, removedMemberIds);
       return { ok: true, error: null, board: saved };
     } catch (err) {
       return { ok: false, error: String((err as Error)?.message || err), board };

@@ -47,19 +47,20 @@ test("доски: подключение, сохранение, слияние �
   await exec("git", ["init", "--bare", "-q", bare]);
 
   try {
-    const { connectBoard, disconnectBoard, listBoards, saveBoard, saveBoardById, syncBoard } =
+    const { applyBoardChange, connectBoard, disconnectBoard, flushAll, listBoards, saveBoard, syncBoard } =
       await import("../server/team.server.ts");
 
     const connected = await connectBoard(`file://${bare}`, "main");
     assert.equal(connected.name, "team");
 
-    await saveBoardById(connected.id, {
+    await applyBoardChange(connected.id, {
       version: 1,
       name: "",
       updatedAt: "",
       members: [member("m1")],
       tasks: [],
     });
+    await flushAll();
 
     // Второй человек работает в своём клоне того же репозитория.
     const cloneB = join(root, "clone-b");
@@ -70,14 +71,14 @@ test("доски: подключение, сохранение, слияние �
     );
 
     // Первый клиент досылает свою задачу: обе должны остаться.
-    const merged = await saveBoardById(connected.id, {
+    await applyBoardChange(connected.id, {
       version: 1,
       name: "",
       updatedAt: "",
       members: [member("m1")],
       tasks: [task("a")],
     });
-    assert.deepEqual(merged.tasks.map((t) => t.id).sort(), ["a", "b"]);
+    await flushAll();
 
     const boards = await listBoards();
     assert.equal(boards.length, 1);

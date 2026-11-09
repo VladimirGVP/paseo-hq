@@ -7,6 +7,7 @@ import {
   mergeBoard,
   nextTaskStatus,
   parseBoard,
+  prevTaskStatus,
   taskColumns,
 } from "./team-model.ts";
 
@@ -58,6 +59,13 @@ test("статус задачи идёт по кругу", () => {
   assert.equal(nextTaskStatus("doing"), "review");
   assert.equal(nextTaskStatus("review"), "done");
   assert.equal(nextTaskStatus("done"), "backlog");
+});
+
+test("статус задачи можно откатить назад", () => {
+  assert.equal(prevTaskStatus("done"), "review");
+  assert.equal(prevTaskStatus("review"), "doing");
+  assert.equal(prevTaskStatus("doing"), "backlog");
+  assert.equal(prevTaskStatus("backlog"), "backlog");
 });
 
 test("колонки раскладывают задачи по статусу и приоритету", () => {

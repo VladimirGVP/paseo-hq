@@ -21,8 +21,10 @@ import {
   TASK_STATUSES,
   TASK_STATUS_LABELS,
   memberTaskCounts,
+  boardDisplayName,
   newId,
   nextTaskStatus,
+  prevTaskStatus,
   taskColumns,
   boardSaveRpc,
   boardStateRpc,
@@ -96,6 +98,7 @@ export function TeamSurface({ theme, layout }: PluginSurfaceProps) {
   const [projects, setProjects] = useState<ProjectOption[]>([]);
   const [memberDraft, setMemberDraft] = useState<TeamMember | null | undefined>(undefined);
   const [taskDraft, setTaskDraft] = useState<TeamTask | null | undefined>(undefined);
+  const [renameOpen, setRenameOpen] = useState(false);
 
   const c = theme.colors;
 
@@ -174,27 +177,25 @@ export function TeamSurface({ theme, layout }: PluginSurfaceProps) {
   }, [loadBoards, loadWorkers, loadProjects]);
 
   const persist = useCallback(
-    async (next: TeamBoard, removedTaskIds: string[] = [], removedMemberIds: string[] = []): Promise<boolean> => {
+    (next: TeamBoard, removedTaskIds: string[] = [], removedMemberIds: string[] = []): void => {
       if (!currentId) {
         toast.error("сначала подключите доску");
-        return false;
+        return;
       }
-      setBusy(true);
-      try {
-        const res = await saveRpc({ boardId: currentId, board: next, removedTaskIds, removedMemberIds });
-        if (res.ok) {
-          setBoard(res.board);
-          setError(null);
-          return true;
-        }
-        toast.error(res.error || "не удалось сохранить доску");
-        return false;
-      } catch (err) {
-        toast.error(err instanceof Error ? err.message : "нет связи с сервером штаба");
-        return false;
-      } finally {
-        setBusy(false);
-      }
+      // Интерфейс обновляется сразу. Запись в git и push идут в фоне, push раз в минуту.
+      setBoard(next);
+      void saveRpc({ boardId: currentId, board: next, removedTaskIds, removedMemberIds })
+        .then((res) => {
+          if (res.ok) {
+            setBoard(res.board);
+            setError(null);
+          } else {
+            toast.error(res.error || "не удалось сохранить доску");
+          }
+        })
+        .catch((err) => {
+          toast.error(err instanceof Error ? err.message : "нет связи с сервером штаба");
+        });
     },
     [currentId, saveRpc, toast],
   );
@@ -253,7 +254,7 @@ export function TeamSurface({ theme, layout }: PluginSurfaceProps) {
     }
   };
 
-  const saveMember = async (member: TeamMember) => {
+  const saveMember = (member: TeamMember) => {
     const next = { ...member, updatedAt: nowIso() };
     const nextBoard: TeamBoard = {
       ...board,
@@ -261,20 +262,22 @@ export function TeamSurface({ theme, layout }: PluginSurfaceProps) {
         ? board.members.map((m) => (m.id === next.id ? next : m))
         : [...board.members, next],
     };
-    if (await persist(nextBoard)) setMemberDraft(undefined);
+    persist(nextBoard);
+    setMemberDraft(undefined);
   };
 
-  const removeMember = async (member: TeamMember) => {
+  const removeMember = (member: TeamMember) => {
     const nextBoard: TeamBoard = {
       ...board,
       members: board.members.filter((m) => m.id !== member.id),
       tasks: board.tasks.map((t) => (t.assigneeId === member.id ? { ...t, assigneeId: null } : t)),
     };
-    if (await persist(nextBoard, [], [member.id])) setMemberDraft(undefined);
+    persist(nextBoard, [], [member.id]);
+    setMemberDraft(undefined);
   };
 
-  const addWorkerMember = async (worker: WorkerInfo) => {
-    await saveMember({
+  const addWorkerMember = (worker: WorkerInfo) => {
+    saveMember({
       id: newId("mem"),
       kind: "container",
       name: worker.name,
@@ -285,7 +288,7 @@ export function TeamSurface({ theme, layout }: PluginSurfaceProps) {
     });
   };
 
-  const saveTask = async (task: TeamTask) => {
+  const saveTask = (task: TeamTask) => {
     const next = { ...task, updatedAt: nowIso() };
     const nextBoard: TeamBoard = {
       ...board,
@@ -293,15 +296,27 @@ export function TeamSurface({ theme, layout }: PluginSurfaceProps) {
         ? board.tasks.map((t) => (t.id === next.id ? next : t))
         : [...board.tasks, next],
     };
-    if (await persist(nextBoard)) setTaskDraft(undefined);
+    persist(nextBoard);
+    setTaskDraft(undefined);
   };
 
-  const removeTask = async (task: TeamTask) => {
-    await persist({ ...board, tasks: board.tasks.filter((t) => t.id !== task.id) }, [task.id], []);
+  const removeTask = (task: TeamTask) => {
+    persist({ ...board, tasks: board.tasks.filter((t) => t.id !== task.id) }, [task.id], []);
   };
 
-  const moveTask = async (task: TeamTask) => {
-    await saveTask({ ...task, status: nextTaskStatus(task.status) });
+  const moveTask = (task: TeamTask, direction: "next" | "prev") => {
+    const status = direction === "next" ? nextTaskStatus(task.status) : prevTaskStatus(task.status);
+    if (status === task.status) return;
+    saveTask({ ...task, status });
+  };
+
+  const renameBoard = (name: string) => {
+    const next = { ...board, name: name.trim() };
+    persist(next);
+    setBoards((prev) =>
+      prev.map((b) => (b.id === currentId ? { ...b, name: boardDisplayName(b.url, name) } : b)),
+    );
+    setRenameOpen(false);
   };
 
   const columns = useMemo(() => {
@@ -310,6 +325,7 @@ export function TeamSurface({ theme, layout }: PluginSurfaceProps) {
   }, [board, hidePersonal]);
 
   const counts = useMemo(() => memberTaskCounts(board), [board]);
+  const currentBoard = boards.find((b) => b.id === currentId);
 
   const memberOptions = useMemo(
     () => [
@@ -411,7 +427,7 @@ export function TeamSurface({ theme, layout }: PluginSurfaceProps) {
           <Pressable
             accessibilityRole="button"
             disabled={busy}
-            onPress={() => void removeMember(member)}
+            onPress={() => removeMember(member)}
             style={({ pressed }) => ({
               paddingHorizontal: 10,
               paddingVertical: 6,
@@ -466,10 +482,28 @@ export function TeamSurface({ theme, layout }: PluginSurfaceProps) {
           ) : null}
         </View>
         <View style={{ flexDirection: "row", gap: 6, flexWrap: "wrap" }}>
+          {task.status !== "backlog" ? (
+            <Pressable
+              accessibilityRole="button"
+              disabled={busy}
+              onPress={() => moveTask(task, "prev")}
+              style={({ pressed }) => ({
+                paddingHorizontal: 8,
+                paddingVertical: 5,
+                borderRadius: 6,
+                backgroundColor: c.surface2,
+                opacity: pressed ? 0.7 : 1,
+              })}
+            >
+              <Text style={{ color: c.foregroundMuted, fontSize: 11 }}>
+                ← {TASK_STATUS_LABELS[prevTaskStatus(task.status)]}
+              </Text>
+            </Pressable>
+          ) : null}
           <Pressable
             accessibilityRole="button"
             disabled={busy}
-            onPress={() => void moveTask(task)}
+            onPress={() => moveTask(task, "next")}
             style={({ pressed }) => ({
               paddingHorizontal: 8,
               paddingVertical: 5,
@@ -484,8 +518,21 @@ export function TeamSurface({ theme, layout }: PluginSurfaceProps) {
           </Pressable>
           <Pressable
             accessibilityRole="button"
+            onPress={() => setTaskDraft(task)}
+            style={({ pressed }) => ({
+              paddingHorizontal: 8,
+              paddingVertical: 5,
+              borderRadius: 6,
+              backgroundColor: c.surface2,
+              opacity: pressed ? 0.7 : 1,
+            })}
+          >
+            <Text style={{ color: c.foreground, fontSize: 11 }}>Изменить</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
             disabled={busy}
-            onPress={() => void removeTask(task)}
+            onPress={() => removeTask(task)}
             style={({ pressed }) => ({
               paddingHorizontal: 8,
               paddingVertical: 5,
@@ -552,10 +599,34 @@ export function TeamSurface({ theme, layout }: PluginSurfaceProps) {
             <View style={{ flex: 1, minWidth: 0 }}>
               <Text style={{ color: c.foreground, fontSize: 18, fontWeight: "700" }}>Команда и задачи</Text>
               <Text style={{ color: c.foregroundMuted, fontSize: 12.5, marginTop: 1 }}>
-                {boards.length === 0 ? "доски не подключены" : `${boards.length} досок`}
+                {currentBoard
+                  ? boardDisplayName(currentBoard.url, board.name)
+                  : boards.length === 0
+                    ? "доски не подключены"
+                    : `${boards.length} досок`}
               </Text>
             </View>
           </View>
+          {currentId ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Переименовать доску"
+              onPress={() => setRenameOpen(true)}
+              style={({ pressed }) => ({
+                width: 34,
+                height: 34,
+                borderRadius: 8,
+                alignItems: "center",
+                justifyContent: "center",
+                backgroundColor: c.surface2,
+                borderWidth: 1,
+                borderColor: c.border,
+                opacity: pressed ? 0.7 : 1,
+              })}
+            >
+              <Icon name="Pencil" size={15} color={c.foreground} />
+            </Pressable>
+          ) : null}
           {currentId ? (
             <Pressable
               accessibilityRole="button"
@@ -751,7 +822,7 @@ export function TeamSurface({ theme, layout }: PluginSurfaceProps) {
                         <Pressable
                           accessibilityRole="button"
                           disabled={busy}
-                          onPress={() => void addWorkerMember(w)}
+                          onPress={() => addWorkerMember(w)}
                           style={({ pressed }) => ({
                             paddingHorizontal: 10,
                             paddingVertical: 6,
@@ -830,8 +901,8 @@ export function TeamSurface({ theme, layout }: PluginSurfaceProps) {
         theme={theme}
         workers={workers}
         onClose={() => setMemberDraft(undefined)}
-        onSave={(member) => void saveMember(member)}
-        onRemove={(member) => void removeMember(member)}
+        onSave={(member) => saveMember(member)}
+        onRemove={(member) => removeMember(member)}
       />
 
       <TaskModal
@@ -844,7 +915,15 @@ export function TeamSurface({ theme, layout }: PluginSurfaceProps) {
           ...projects.map((p) => ({ label: p.name, value: p.id })),
         ]}
         onClose={() => setTaskDraft(undefined)}
-        onSave={(task) => void saveTask(task)}
+        onSave={(task) => saveTask(task)}
+      />
+
+      <RenameModal
+        open={renameOpen}
+        initial={board.name}
+        theme={theme}
+        onClose={() => setRenameOpen(false)}
+        onSave={(name) => renameBoard(name)}
       />
     </View>
   );
@@ -1109,6 +1188,49 @@ function TaskModal({
                 backgroundColor: c.accent,
                 opacity: valid ? 1 : 0.5,
               }}
+            >
+              <Text style={{ color: "#FFFFFF", fontSize: 13, fontWeight: "600" }}>Сохранить</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal.Content>
+    </Modal>
+  );
+}
+
+function RenameModal({
+  open,
+  initial,
+  theme,
+  onClose,
+  onSave,
+}: {
+  open: boolean;
+  initial: string;
+  theme: PluginTheme;
+  onClose: () => void;
+  onSave: (name: string) => void;
+}) {
+  const c = theme.colors;
+  const [name, setName] = useState(initial);
+
+  useEffect(() => {
+    if (open) setName(initial);
+  }, [open, initial]);
+
+  return (
+    <Modal title="Название доски" open={open} onOpenChange={(value) => !value && onClose()}>
+      <Modal.Content>
+        <View style={{ gap: 14 }}>
+          <Field label="Название" value={name} onChangeText={setName} placeholder="Команда" theme={theme} />
+          <Text style={{ color: c.foregroundMuted, fontSize: 11.5 }}>
+            Пустое имя - будет название репозитория.
+          </Text>
+          <View style={{ flexDirection: "row", justifyContent: "flex-end" }}>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => onSave(name)}
+              style={{ paddingHorizontal: 16, paddingVertical: 9, borderRadius: 8, backgroundColor: c.accent }}
             >
               <Text style={{ color: "#FFFFFF", fontSize: 13, fontWeight: "600" }}>Сохранить</Text>
             </Pressable>

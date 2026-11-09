@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -17,12 +17,28 @@ import {
 const execFileAsync = promisify(execFile);
 
 export const BOARD_FILE = "hq.json";
+export const PENDING_FILE = "hq.pending.json";
 const CONFIG_FILE =
   process.env.PASEO_HQ_TEAM_CONFIG || join(homedir(), ".local", "state", "paseo-hq", "team.json");
 const BASE_DIR =
   process.env.PASEO_HQ_TEAM_DIR || join(homedir(), ".local", "state", "paseo-hq");
 
+/** Как часто отправлять накопленные правки в git. */
+export const FLUSH_INTERVAL_MS = 60_000;
+
 let cachedConfigs: BoardConfig[] | null = null;
+
+interface Draft {
+  board: TeamBoard;
+  removedTaskIds: Set<string>;
+  removedMemberIds: Set<string>;
+  dirty: boolean;
+}
+
+const drafts = new Map<string, Draft>();
+let hydration: Promise<void> | null = null;
+let flushTimer: NodeJS.Timeout | null = null;
+let flushing = false;
 
 function normalizeUrl(url: string): string {
   const trimmed = url.trim();
@@ -184,16 +200,70 @@ export async function readBoard(cfg: BoardConfig): Promise<TeamBoard> {
   }
 }
 
-export async function saveBoard(
-  cfg: BoardConfig,
-  incoming: TeamBoard,
-  removedTaskIds: readonly string[] = [],
-  removedMemberIds: readonly string[] = [],
-): Promise<TeamBoard> {
-  await pullRepo(cfg);
-  const remote = await readBoard(cfg);
-  const merged = mergeBoard(remote, incoming, removedTaskIds, removedMemberIds);
+function pendingPath(cfg: BoardConfig): string {
+  return join(cfg.dir, PENDING_FILE);
+}
 
+interface PendingFile {
+  board: TeamBoard;
+  removedTaskIds: string[];
+  removedMemberIds: string[];
+}
+
+async function readPending(cfg: BoardConfig): Promise<Draft | null> {
+  try {
+    const raw = JSON.parse(await readFile(pendingPath(cfg), "utf8")) as Partial<PendingFile>;
+    return {
+      board: parseBoard(raw.board),
+      removedTaskIds: new Set(Array.isArray(raw.removedTaskIds) ? raw.removedTaskIds : []),
+      removedMemberIds: new Set(Array.isArray(raw.removedMemberIds) ? raw.removedMemberIds : []),
+      dirty: true,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function writePending(cfg: BoardConfig, draft: Draft): Promise<void> {
+  const path = pendingPath(cfg);
+  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  const payload: PendingFile = {
+    board: draft.board,
+    removedTaskIds: [...draft.removedTaskIds],
+    removedMemberIds: [...draft.removedMemberIds],
+  };
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  await writeFile(tmp, `${JSON.stringify(payload, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  await rename(tmp, path);
+}
+
+async function removePending(cfg: BoardConfig): Promise<void> {
+  await unlink(pendingPath(cfg)).catch(() => undefined);
+}
+
+async function doHydrate(): Promise<void> {
+  const configs = await readConfigs();
+  for (const cfg of configs) {
+    const draft = await readPending(cfg);
+    if (draft) drafts.set(cfg.id, draft);
+  }
+  if ([...drafts.values()].some((d) => d.dirty)) scheduleFlush();
+}
+
+function ensureHydrated(): Promise<void> {
+  if (!hydration) hydration = doHydrate();
+  return hydration;
+}
+
+function scheduleFlush(): void {
+  if (flushTimer) return;
+  flushTimer = setInterval(() => {
+    void flushAll();
+  }, FLUSH_INTERVAL_MS);
+  flushTimer.unref?.();
+}
+
+async function writeAndPush(cfg: BoardConfig, merged: TeamBoard): Promise<void> {
   await writeFile(join(cfg.dir, BOARD_FILE), `${JSON.stringify(merged, null, 2)}\n`, {
     encoding: "utf8",
     mode: 0o600,
@@ -207,19 +277,104 @@ export async function saveBoard(
       throw new Error(`не удалось сохранить доску: ${text}`);
     }
   }
-  if (await hasHead(cfg.dir)) {
+  if (!(await hasHead(cfg.dir))) return;
+  try {
+    await git(cfg.dir, ["push", "origin", cfg.branch], 120000);
+  } catch {
     try {
+      await git(cfg.dir, ["pull", "--rebase", "--autostash", "origin", cfg.branch], 120000);
       await git(cfg.dir, ["push", "origin", cfg.branch], 120000);
-    } catch {
-      try {
-        await git(cfg.dir, ["pull", "--rebase", "--autostash", "origin", cfg.branch], 120000);
-        await git(cfg.dir, ["push", "origin", cfg.branch], 120000);
-      } catch (err) {
-        await git(cfg.dir, ["rebase", "--abort"]).catch(() => undefined);
-        throw new Error(`не удалось отправить доску: ${errorText(err)}`);
-      }
+    } catch (err) {
+      await git(cfg.dir, ["rebase", "--abort"]).catch(() => undefined);
+      throw new Error(`не удалось отправить доску: ${errorText(err)}`);
     }
   }
+}
+
+/** Синхронное сохранение прямо в git: подтянуть, слить, записать, запушить. */
+export async function saveBoard(
+  cfg: BoardConfig,
+  incoming: TeamBoard,
+  removedTaskIds: readonly string[] = [],
+  removedMemberIds: readonly string[] = [],
+): Promise<TeamBoard> {
+  await pullRepo(cfg);
+  const remote = await readBoard(cfg);
+  const merged = mergeBoard(remote, incoming, removedTaskIds, removedMemberIds);
+  await writeAndPush(cfg, merged);
+  return merged;
+}
+
+async function flushBoard(boardId: string, draft: Draft): Promise<void> {
+  const cfg = await getConfig(boardId);
+  if (!cfg || !draft.dirty) return;
+  try {
+    await pullRepo(cfg);
+    const remote = await readBoard(cfg);
+    const merged = mergeBoard(remote, draft.board, [...draft.removedTaskIds], [...draft.removedMemberIds]);
+    await writeAndPush(cfg, merged);
+    draft.board = merged;
+    draft.dirty = false;
+    draft.removedTaskIds.clear();
+    draft.removedMemberIds.clear();
+    await removePending(cfg);
+  } catch (err) {
+    console.warn("[team] flush failed:", (err as Error)?.message || err);
+  }
+}
+
+export async function flushAll(): Promise<void> {
+  if (flushing) return;
+  flushing = true;
+  try {
+    await ensureHydrated();
+    for (const [boardId, draft] of drafts) {
+      if (draft.dirty) await flushBoard(boardId, draft);
+    }
+  } finally {
+    flushing = false;
+  }
+}
+
+export async function boardView(boardId: string): Promise<TeamBoard> {
+  await ensureHydrated();
+  const draft = drafts.get(boardId);
+  if (draft) return draft.board;
+  const cfg = await getConfig(boardId);
+  if (!cfg) return { ...EMPTY_BOARD };
+  return readBoard(cfg);
+}
+
+/**
+ * Правка из интерфейса: сразу применяем в память и в локальный pending-файл,
+ * а в git отправляем пачкой раз в минуту (flushAll).
+ */
+export async function applyBoardChange(
+  boardId: string,
+  incoming: TeamBoard,
+  removedTaskIds: readonly string[] = [],
+  removedMemberIds: readonly string[] = [],
+): Promise<TeamBoard> {
+  await ensureHydrated();
+  const cfg = await getConfig(boardId);
+  if (!cfg) throw new Error("доска не найдена");
+  const draft: Draft =
+    drafts.get(boardId) ?? {
+      board: await readBoard(cfg),
+      removedTaskIds: new Set<string>(),
+      removedMemberIds: new Set<string>(),
+      dirty: false,
+    };
+  const merged = mergeBoard(draft.board, incoming, removedTaskIds, removedMemberIds);
+  draft.board = merged;
+  for (const id of removedTaskIds) draft.removedTaskIds.add(id);
+  for (const id of removedMemberIds) draft.removedMemberIds.add(id);
+  for (const task of incoming.tasks) draft.removedTaskIds.delete(task.id);
+  for (const member of incoming.members) draft.removedMemberIds.delete(member.id);
+  draft.dirty = true;
+  drafts.set(boardId, draft);
+  await writePending(cfg, draft);
+  scheduleFlush();
   return merged;
 }
 
@@ -241,10 +396,12 @@ export async function connectBoard(
 }
 
 export async function disconnectBoard(boardId: string): Promise<void> {
+  drafts.delete(boardId);
   const configs = await readConfigs();
   const cfg = configs.find((b) => b.id === boardId);
   await writeConfigs(configs.filter((b) => b.id !== boardId));
   if (cfg) {
+    await removePending(cfg);
     await rename(cfg.dir, `${cfg.dir}.previous-${Date.now()}`).catch(() => undefined);
   }
 }
@@ -252,10 +409,12 @@ export async function disconnectBoard(boardId: string): Promise<void> {
 export async function listBoards(): Promise<
   { id: string; url: string; branch: string; dir: string; name: string; syncedAt: string | null }[]
 > {
+  await ensureHydrated();
   const configs = await readConfigs();
   const result = [];
   for (const cfg of configs) {
-    const board = await readBoard(cfg);
+    const draft = drafts.get(cfg.id);
+    const board = draft ? draft.board : await readBoard(cfg);
     result.push({
       id: cfg.id,
       url: cfg.url,
@@ -269,19 +428,17 @@ export async function listBoards(): Promise<
 }
 
 export async function syncBoard(boardId: string): Promise<TeamBoard> {
+  await ensureHydrated();
   const cfg = await getConfig(boardId);
   if (!cfg) throw new Error("доска не найдена");
   await pullRepo(cfg);
-  return readBoard(cfg);
-}
-
-export async function saveBoardById(
-  boardId: string,
-  incoming: TeamBoard,
-  removedTaskIds: readonly string[] = [],
-  removedMemberIds: readonly string[] = [],
-): Promise<TeamBoard> {
-  const cfg = await getConfig(boardId);
-  if (!cfg) throw new Error("доска не найдена");
-  return saveBoard(cfg, incoming, removedTaskIds, removedMemberIds);
+  const remote = await readBoard(cfg);
+  const draft = drafts.get(boardId);
+  if (draft && draft.dirty) {
+    const merged = mergeBoard(remote, draft.board, [...draft.removedTaskIds], [...draft.removedMemberIds]);
+    draft.board = merged;
+    await writePending(cfg, draft);
+    return merged;
+  }
+  return remote;
 }
