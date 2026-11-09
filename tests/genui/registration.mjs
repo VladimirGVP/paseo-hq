@@ -30,12 +30,15 @@ const native = { Platform: { OS: "web" }, StyleSheet: { create: (styles) => styl
 const ui = { Icon: () => null, useRevealedText: (text) => text };
 const modules = [ { requirePluginText: (text) => text }, {}, ui, ui, {}, require("@getpaseo/plugin"), {}, React, require("react/jsx-runtime"), native, require("@tanstack/react-query"), require("zod"), { parsePluginIcon: (_, icon) => icon }, {} ];
 const exported = {};
-vm.runInNewContext(runtimeSource, { console, __d(factory, id, dependencies) { factory({}, (key) => modules[dependencies.indexOf(key)], null, null, { exports: exported }, exported, dependencies); } });
-const built = await build({ absWorkingDir: root, entryPoints: ["client/genui/contribute.tsx"], bundle: true, platform: "node", format: "cjs", jsx: "automatic", write: false, external: ["@getpaseo/plugin", "@getpaseo/plugin/*", "react", "react/*", "react-native", "@tanstack/react-query", "zod"] });
+vm.runInNewContext(runtimeSource, { console, setTimeout, clearTimeout, AbortController, __d(factory, id, dependencies) { factory({}, (key) => modules[dependencies.indexOf(key)], null, null, { exports: exported }, exported, dependencies); } });
+const built = await build({ absWorkingDir: root, entryPoints: ["index.client.tsx"], bundle: true, platform: "node", format: "cjs", jsx: "automatic", write: false, external: ["@getpaseo/plugin", "@getpaseo/plugin/*", "react", "react/*", "react-native", "@tanstack/react-query", "zod"] });
 const source = `(function(require){ const module = {exports:{}}; const exports = module.exports; ${built.outputFiles[0].text}; return module.exports; })`;
-const loaded = exported.runPluginClientBundle("paseo-hq", source, { playAudio: async () => {}, paseo: {} });
+const loaded = exported.runPluginClientBundle("paseo-hq", source, { playAudio: async () => {}, paseo: { agents: { list: async () => ({ entries: [] }), subscribe: () => () => {} } }, rpc: async () => ({ providers: [] }) });
 assert(loaded.timelineRenderers.some((entry) => entry.kind === "genui-block"));
 assert(loaded.surfaces.some((entry) => entry.id === "gallery"));
-assert.deepEqual(Array.from(loaded.clientSlashCommands, (entry) => entry.name), ["genui", "genui-demo", "genui-gallery"]);
+assert(loaded.sidebarItems.header.some((entry) => entry.id === "projects-quick-header"));
+for (const name of ["genui", "genui-demo", "genui-gallery"]) {
+ assert(loaded.clientSlashCommands.some((entry) => entry.name === name));
+}
 await loaded.cleanup();
-console.log("Installed Paseo client accepted Genui's renderers, gallery, settings and commands");
+console.log("Installed Paseo client accepted the entire HQ, including the projects sidebar and Genui");
