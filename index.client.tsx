@@ -683,7 +683,6 @@ function DragGripHandle({
   index,
   total,
   onMoveDelta,
-  onDragStateChange,
   isCompact,
   theme,
   label,
@@ -692,7 +691,6 @@ function DragGripHandle({
   index: number;
   total: number;
   onMoveDelta: (id: string, delta: number) => void;
-  onDragStateChange?: (active: boolean) => void;
   isCompact: boolean;
   theme: PluginTheme;
   label: string;
@@ -707,45 +705,33 @@ function DragGripHandle({
       PanResponder.create({
         onStartShouldSetPanResponder: () => true,
         onStartShouldSetPanResponderCapture: () => true,
-        onMoveShouldSetPanResponder: () => true,
-        onMoveShouldSetPanResponderCapture: () => true,
+        onMoveShouldSetPanResponder: (_evt, gesture) => Math.abs(gesture.dy) > 4,
+        onMoveShouldSetPanResponderCapture: (_evt, gesture) => Math.abs(gesture.dy) > 4,
         onPanResponderGrant: () => {
           setDragging(true);
-          onDragStateChange?.(true);
           accumDyRef.current = 0;
-          try {
-            if (typeof navigator !== "undefined" && navigator.vibrate) navigator.vibrate(30);
-          } catch {}
         },
         onPanResponderMove: (_evt, gesture) => {
           const dy = gesture.dy - accumDyRef.current;
           if (dy > stepHeight) {
             onMoveDelta(id, 1);
             accumDyRef.current += stepHeight;
-            try {
-              if (typeof navigator !== "undefined" && navigator.vibrate) navigator.vibrate(15);
-            } catch {}
           } else if (dy < -stepHeight) {
             onMoveDelta(id, -1);
             accumDyRef.current -= stepHeight;
-            try {
-              if (typeof navigator !== "undefined" && navigator.vibrate) navigator.vibrate(15);
-            } catch {}
           }
         },
         onPanResponderRelease: () => {
           setDragging(false);
-          onDragStateChange?.(false);
           accumDyRef.current = 0;
         },
         onPanResponderTerminate: () => {
           setDragging(false);
-          onDragStateChange?.(false);
           accumDyRef.current = 0;
         },
         onPanResponderTerminationRequest: () => false,
       }),
-    [id, onMoveDelta, onDragStateChange, stepHeight]
+    [id, onMoveDelta, stepHeight]
   );
 
   return (
@@ -760,10 +746,6 @@ function DragGripHandle({
           alignItems: "center",
           justifyContent: "center",
           cursor: "grab",
-          touchAction: "none",
-          userSelect: "none",
-          WebkitUserSelect: "none",
-          WebkitTouchCallout: "none",
         } as any)}
       >
         <Text
@@ -827,14 +809,12 @@ function useLongPressDrag({
   id,
   enabled,
   onMoveDelta,
-  onDragStateChange,
   onTap,
   stepHeight = 48,
 }: {
   id: string;
   enabled: boolean;
   onMoveDelta: (id: string, delta: number) => void;
-  onDragStateChange?: (active: boolean) => void;
   onTap: () => void;
   stepHeight?: number;
 }) {
@@ -844,25 +824,12 @@ function useLongPressDrag({
   const accumDyRef = useRef(0);
   const movedRef = useRef(false);
 
-  useEffect(() => {
-    return () => {
-      if (timerRef.current) {
-        clearTimeout(timerRef.current);
-        timerRef.current = null;
-      }
-      if (isDraggingRef.current) {
-        isDraggingRef.current = false;
-        onDragStateChange?.(false);
-      }
-    };
-  }, [onDragStateChange]);
-
   const panResponder = useMemo(() => {
     if (!enabled) return null;
     return PanResponder.create({
       onStartShouldSetPanResponder: () => true,
       onStartShouldSetPanResponderCapture: () => false,
-      onMoveShouldSetPanResponder: () => isDraggingRef.current,
+      onMoveShouldSetPanResponder: (_evt, gesture) => isDraggingRef.current || Math.abs(gesture.dy) > 5,
       onMoveShouldSetPanResponderCapture: () => isDraggingRef.current,
       onPanResponderGrant: () => {
         accumDyRef.current = 0;
@@ -871,17 +838,16 @@ function useLongPressDrag({
         timerRef.current = setTimeout(() => {
           isDraggingRef.current = true;
           setIsDragging(true);
-          onDragStateChange?.(true);
           try {
             if (typeof navigator !== "undefined" && navigator.vibrate) {
-              navigator.vibrate(40);
+              navigator.vibrate(35);
             }
           } catch {}
         }, 260);
       },
       onPanResponderMove: (_evt, gesture) => {
         if (!isDraggingRef.current) {
-          if (Math.abs(gesture.dx) > 12 || Math.abs(gesture.dy) > 12) {
+          if (Math.abs(gesture.dx) > 6 || Math.abs(gesture.dy) > 6) {
             movedRef.current = true;
             if (timerRef.current) {
               clearTimeout(timerRef.current);
@@ -913,7 +879,6 @@ function useLongPressDrag({
         if (isDraggingRef.current) {
           isDraggingRef.current = false;
           setIsDragging(false);
-          onDragStateChange?.(false);
         } else if (!movedRef.current) {
           onTap();
         }
@@ -923,15 +888,12 @@ function useLongPressDrag({
           clearTimeout(timerRef.current);
           timerRef.current = null;
         }
-        if (isDraggingRef.current) {
-          isDraggingRef.current = false;
-          setIsDragging(false);
-          onDragStateChange?.(false);
-        }
+        isDraggingRef.current = false;
+        setIsDragging(false);
       },
       onPanResponderTerminationRequest: () => !isDraggingRef.current,
     });
-  }, [enabled, id, onMoveDelta, onDragStateChange, onTap, stepHeight]);
+  }, [enabled, id, onMoveDelta, onTap, stepHeight]);
 
   return { panResponder, isDragging };
 }
@@ -942,7 +904,6 @@ function ProjectHeaderPressable({
   isManual,
   onToggleOpen,
   onMoveProject,
-  onDragStateChange,
   theme,
   layout,
   relativeTime,
@@ -952,7 +913,6 @@ function ProjectHeaderPressable({
   isManual: boolean;
   onToggleOpen: () => void;
   onMoveProject: (id: string, delta: number) => void;
-  onDragStateChange?: (active: boolean) => void;
   theme: PluginTheme;
   layout: PluginSidebarItemProps["layout"];
   relativeTime: (ms: number) => string;
@@ -962,7 +922,6 @@ function ProjectHeaderPressable({
     id: group.id,
     enabled: isManual,
     onMoveDelta: onMoveProject,
-    onDragStateChange,
     onTap: onToggleOpen,
     stepHeight: layout.compact ? 52 : 46,
   });
@@ -1026,13 +985,6 @@ function ProjectHeaderPressable({
           alignItems: "center",
           cursor: isDragging ? "grabbing" : "grab",
           userSelect: "none",
-          WebkitUserSelect: "none",
-          WebkitTouchCallout: "none",
-          touchAction: isDragging ? "none" : undefined,
-          backgroundColor: isDragging ? c.surface2 : undefined,
-          borderRadius: 8,
-          paddingHorizontal: isDragging ? 6 : 0,
-          transform: isDragging ? [{ scale: 1.02 }] : undefined,
         } as any)}
       >
         {content}
@@ -1060,7 +1012,6 @@ function SessionRowPressable({
   isManual,
   onJump,
   onMoveSession,
-  onDragStateChange,
   theme,
   layout,
   children,
@@ -1069,7 +1020,6 @@ function SessionRowPressable({
   isManual: boolean;
   onJump: () => void;
   onMoveSession: (id: string, delta: number) => void;
-  onDragStateChange?: (active: boolean) => void;
   theme: PluginTheme;
   layout: PluginSidebarItemProps["layout"];
   children: React.ReactNode;
@@ -1079,7 +1029,6 @@ function SessionRowPressable({
     id: chatId,
     enabled: isManual,
     onMoveDelta: onMoveSession,
-    onDragStateChange,
     onTap: onJump,
     stepHeight: layout.compact ? 44 : 38,
   });
@@ -1099,13 +1048,9 @@ function SessionRowPressable({
           paddingRight: 8,
           borderRadius: 9,
           backgroundColor: isDragging ? c.surface2 : undefined,
-          opacity: isDragging ? 0.7 : 1,
+          opacity: isDragging ? 0.6 : 1,
           cursor: isDragging ? "grabbing" : "grab",
           userSelect: "none",
-          WebkitUserSelect: "none",
-          WebkitTouchCallout: "none",
-          touchAction: isDragging ? "none" : undefined,
-          transform: isDragging ? [{ scale: 1.02 }] : undefined,
         } as any)}
       >
         {children}
@@ -1222,33 +1167,6 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
   const c = theme.colors;
   const isWeb = layout.platform === "web" && typeof (globalThis as { document?: unknown }).document !== "undefined";
   const btnSize = layout.compact ? 36 : 30;
-
-  // Блокировка скролла панели при ручном перетаскивании на мобильных устройствах
-  const [isDraggingActive, setIsDraggingActive] = useState(false);
-
-  useEffect(() => {
-    if (!isDraggingActive) return;
-    if (typeof window === "undefined") return;
-
-    const handleTouchMove = (e: TouchEvent) => {
-      if (e.cancelable) {
-        e.preventDefault();
-      }
-    };
-
-    window.addEventListener("touchmove", handleTouchMove, { passive: false });
-    const prevUserSelect = document.body?.style.userSelect;
-    if (document.body) {
-      document.body.style.userSelect = "none";
-    }
-
-    return () => {
-      window.removeEventListener("touchmove", handleTouchMove);
-      if (document.body) {
-        document.body.style.userSelect = prevUserSelect ?? "";
-      }
-    };
-  }, [isDraggingActive]);
 
   const reloadAll = useCallback(async () => {
     try {
@@ -2380,7 +2298,6 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
       {!collapsed ? (
         <ScrollView
           ref={listRef}
-          scrollEnabled={!isDraggingActive}
           style={{
             maxHeight: measuredMaxHeight ?? listMaxHeight,
           }}
@@ -2463,7 +2380,6 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
                       index={idx}
                       total={visibleGroups.length}
                       onMoveDelta={handleMoveProject}
-                      onDragStateChange={setIsDraggingActive}
                       isCompact={layout.compact}
                       theme={theme}
                       label="проект"
@@ -2476,7 +2392,6 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
                     isManual={isManualProjects}
                     onToggleOpen={() => toggleProjectOpen(group.id, idx === 0)}
                     onMoveProject={handleMoveProject}
-                    onDragStateChange={setIsDraggingActive}
                     theme={theme}
                     layout={layout}
                     relativeTime={relativeTime}
@@ -2598,7 +2513,6 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
                                 index={chatIdx}
                                 total={displayedChats.length}
                                 onMoveDelta={(id, delta) => void handleMoveSession(group.id, id, delta)}
-                                onDragStateChange={setIsDraggingActive}
                                 isCompact={layout.compact}
                                 theme={theme}
                                 label="сессию"
@@ -2611,7 +2525,6 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
                             isManual={isManualSessions}
                             onJump={() => jumpToWorkspace(chat.id)}
                             onMoveSession={(id, delta) => void handleMoveSession(group.id, id, delta)}
-                            onDragStateChange={setIsDraggingActive}
                             theme={theme}
                             layout={layout}
                           >
