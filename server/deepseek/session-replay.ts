@@ -1,7 +1,8 @@
 import { open, opendir, readdir } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { setImmediate as yieldLoop } from "node:timers/promises";
-import { zstdDecompress } from "node:zlib";
+import { zstdDecompressSync } from "node:zlib";
 import type { AcpStreamMessage } from "@getpaseo/plugin/server/acp";
 import { resolveDshHome } from "./dsh-home";
 
@@ -22,6 +23,9 @@ const BOOKKEEPING = new Set([
   "goal/change", "system/message", "developer/message", "model/selection",
   "compaction/start", "compaction/summary", "compaction/end", "compaction/prune",
   "web/deepseek-search-llm-request",
+  // Already represented by the surrounding tool call/result or model attempt.
+  // These records carry no additional conversation messages.
+  "approval/asked", "approval/decided", "todo/write", "llm/retry", "llm/retry-started",
 ]);
 
 export interface ReplayTarget {
@@ -44,7 +48,7 @@ class ReplayError extends Error {
 
 type RecordValue = Record<string, unknown>;
 
-/** Best-effort v4 text history only; no writes, new sessions, or model calls. */
+/** Best-effort v4 history; no writes, new sessions, or model calls. */
 export async function buildSessionReplay(
   target: ReplayTarget,
   env: Readonly<Record<string, string | undefined>>,
@@ -116,6 +120,7 @@ async function readReplay(
     if (header.version !== 4) throw new ReplayError("unsupported");
     if (header.id !== target.sessionId || header.cwd !== target.cwd) continue;
     const frames: AcpStreamMessage[] = [];
+    const images = { home, signal, bytes: 0 };
     let previous: RecordValue | undefined;
     for (let index = 1; index < lines.length; index++) {
       if (index % 256 === 0) await yieldLoop();
@@ -124,7 +129,7 @@ async function readReplay(
       if (event.seq !== index - 1 || typeof event.time !== "number") {
         throw new ReplayError("corrupt");
       }
-      for (const update of replayEvent(event, previous)) {
+      for (const update of await replayEvent(event, previous, images)) {
         frames.push({
           jsonrpc: "2.0",
           method: "session/update",
@@ -169,6 +174,9 @@ async function decodeFrames(input: Buffer, signal: AbortSignal): Promise<string>
   let offset = 0;
   let bytes = 0;
   while (offset < input.length) {
+    // DSH appends thousands of tiny independent frames. Avoid a thread-pool
+    // round trip per frame, while yielding regularly for the replay deadline.
+    if (parts.length % 256 === 0) await yieldLoop();
     signal.throwIfAborted();
     if (parts.length >= MAX_RECORDS || bytes >= MAX_TEXT_BYTES) throw new ReplayError("limit");
     const remaining = input.subarray(offset);
@@ -178,12 +186,12 @@ async function decodeFrames(input: Buffer, signal: AbortSignal): Promise<string>
     const length = frameLength(remaining);
     // DSH appends independent frames. Walk their headers instead of searching
     // payloads for magic bytes, which can also occur inside a valid frame.
-    const decoded = await new Promise<Buffer>((resolve, reject) => {
-      zstdDecompress(remaining.subarray(0, length), { maxOutputLength: MAX_TEXT_BYTES - bytes }, (error, result) => {
-        if (error) reject(new ReplayError((error as NodeJS.ErrnoException).code === "ERR_BUFFER_TOO_LARGE" ? "limit" : "corrupt"));
-        else resolve(result);
-      });
-    });
+    let decoded: Buffer;
+    try {
+      decoded = zstdDecompressSync(remaining.subarray(0, length), { maxOutputLength: MAX_TEXT_BYTES - bytes });
+    } catch (error) {
+      throw new ReplayError((error as NodeJS.ErrnoException).code === "ERR_BUFFER_TOO_LARGE" ? "limit" : "corrupt");
+    }
     signal.throwIfAborted();
     parts.push(decoded);
     bytes += decoded.length;
@@ -218,7 +226,13 @@ function frameLength(input: Buffer): number {
   return end;
 }
 
-function replayEvent(event: RecordValue, previous?: RecordValue): RecordValue[] {
+interface ReplayImages {
+  home: string;
+  signal: AbortSignal;
+  bytes: number;
+}
+
+async function replayEvent(event: RecordValue, previous: RecordValue | undefined, images: ReplayImages): Promise<RecordValue[]> {
   const data = record(event.data);
   if (typeof event.type !== "string") throw new ReplayError("corrupt");
   if (BOOKKEEPING.has(event.type)) return [];
@@ -234,10 +248,10 @@ function replayEvent(event: RecordValue, previous?: RecordValue): RecordValue[] 
       const source = record(data.source);
       if (typeof source.kind !== "string") throw new ReplayError("corrupt");
       if (source.kind !== "user") return [];
-      return textUpdates(data, "user_message_chunk");
+      return textUpdates(data, "user_message_chunk", images);
     }
     case "assistant/message":
-      return textUpdates(record(data.message), "agent_message_chunk");
+      return textUpdates(record(data.message), "agent_message_chunk", images);
     case "tool/call": {
       const args = string(data.arguments);
       let rawInput: unknown = args;
@@ -292,19 +306,41 @@ function isCompactionReplacement(event: RecordValue, previous?: RecordValue): bo
     && source.compactionId === marker.compactionId;
 }
 
-function textUpdates(message: RecordValue, kind: string): RecordValue[] {
+async function textUpdates(message: RecordValue, kind: string, images: ReplayImages): Promise<RecordValue[]> {
   const id = string(message.id);
-  return blocks(message.content).flatMap((block, index) => {
+  const updates: RecordValue[] = [];
+  for (const [index, block] of blocks(message.content).entries()) {
     // The separate tool/call record owns this card.
-    if (block.type === "tool-call" && kind === "agent_message_chunk") return [];
+    if (block.type === "tool-call" && kind === "agent_message_chunk") continue;
     const thought = block.type === "reasoning" && kind === "agent_message_chunk";
-    if (block.type !== "text" && !thought) throw new ReplayError("unsupported");
-    return [{
+    if (block.type !== "text" && block.type !== "image" && !thought) throw new ReplayError("unsupported");
+    const content = block.type === "image"
+      ? await imageContent(record(block.attachment), images)
+      : { type: "text", text: string(block.text) };
+    updates.push({
       sessionUpdate: thought ? "agent_thought_chunk" : kind,
       messageId: `replay:${id}:${index}`,
-      content: { type: "text", text: string(block.text) },
-    }];
-  });
+      content,
+    });
+  }
+  return updates;
+}
+
+/** DSH's immutable v1 image objects are named by their SHA-256 digest. */
+async function imageContent(attachment: RecordValue, images: ReplayImages): Promise<RecordValue> {
+  const digest = /^sha256:([a-f0-9]{64})$/.exec(string(attachment.attachmentId))?.[1];
+  if (!digest || !Number.isSafeInteger(attachment.bytes) || (attachment.bytes as number) < 0) {
+    throw new ReplayError("corrupt");
+  }
+  const mimeType = string(attachment.mediaType);
+  if (!["image/png", "image/jpeg", "image/webp", "image/gif"].includes(mimeType)) throw new ReplayError("unsupported");
+  images.bytes += Math.ceil((attachment.bytes as number) / 3) * 4;
+  if (images.bytes > MAX_TEXT_BYTES) throw new ReplayError("limit");
+  const bytes = await readBounded(join(images.home, "attachments", "v1", "objects", digest.slice(0, 2), digest), images.signal);
+  if (bytes.length !== attachment.bytes || createHash("sha256").update(bytes).digest("hex") !== digest) {
+    throw new ReplayError("corrupt");
+  }
+  return { type: "image", mimeType, data: bytes.toString("base64") };
 }
 
 function record(value: unknown): RecordValue {
