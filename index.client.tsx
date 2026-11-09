@@ -59,9 +59,10 @@ import { GitWorkspaceSurface } from "./client/git-workspace-surface";
 import { GitWorkspaceSettings } from "./client/git-workspace-settings";
 import { Services } from "./client/services-surface";
 import { ArtifactsSurface } from "./client/artifacts-surface";
+import contributeGenuiClient from "./client/genui/contribute";
+import { splitHqTimelineMessage } from "./client/hq-timeline";
 import { ArtifactCard } from "./client/artifact-card";
 import {
-  splitArtifactTimelineMessage,
   ARTIFACT_BLOCK_KIND,
   ARTIFACT_TEXT_KIND,
 } from "./client/artifacts-segment";
@@ -3285,6 +3286,7 @@ function JumpBridgeScreen({ navigation, params }: PluginScreenProps) {
 }
 
 export default function contribute(client: PluginClientContext) {
+  const removeGenui = contributeGenuiClient(client);
   const disposeScreen = client.addScreen({
     id: "jump",
     title: "Переход к сессии",
@@ -3334,7 +3336,7 @@ export default function contribute(client: PluginClientContext) {
     id: "paseo-hq-artifacts",
     query: { itemType: "assistant_message" },
     transform({ item, phase }) {
-      return splitArtifactTimelineMessage(item.text, phase, item.messageId);
+      return splitHqTimelineMessage(item.text, phase, item.messageId);
     },
   });
 
@@ -3404,6 +3406,7 @@ export default function contribute(client: PluginClientContext) {
   const removeLimitAlerts = contributeLimitAlerts(client);
 
   return () => {
+    removeGenui();
     disposeScreen();
     disposeHeader();
     try {

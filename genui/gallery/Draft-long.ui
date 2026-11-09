@@ -1,0 +1,1 @@
+Card("Draft PR comment", [Draft("**Suggestion:** `requeue()` passes only the job id, so a retried job loses its payload and the worker fails with `undefined is not iterable` on the second attempt. Passing the whole job object, or reading the payload back from the store before requeueing, would fix it.")])

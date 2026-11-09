@@ -1,0 +1,14 @@
+Paseo HQ includes code, examples and assets from paseo-plugin-genui 0.3.3.
+Copyright and attribution: anh-chu and the paseo-plugin-genui contributors.
+Source: https://github.com/anh-chu/paseo-plugin-genui
+License: Apache-2.0, reproduced in genui/LICENSE.
+
+Imported source: client/genui, server/genui, shared/genui.
+Imported examples and assets: genui/gallery, genui/assets.
+GNATOVSKIE changed runtime import paths and contribution entrypoints, composed
+inline UI with document rendering, adapted packaged asset discovery, and adjusted
+tests for the HQ layout. Modified source files carry an integration notice.
+New integration code and tests are authored as part of Paseo HQ.
+
+The Excalifont font is distributed under the SIL Open Font License.
+See genui/assets/fonts/Excalifont-OFL.txt.

@@ -74,6 +74,7 @@ import { cloneAndCreateWorkspace } from "./server/git-service.server";
 import { repoCacheService } from "./server/git-cache.server";
 import { read as readServicesRpc } from "./shared/services-contracts";
 import { readServices } from "./server/services.server";
+import contributeGenuiServer from "./server/genui/contribute";
 import { createDeepSeekHarnessProvider } from "./server/deepseek/provider";
 import { createDeepSeekUsageSource } from "./server/deepseek/usage";
 
@@ -526,6 +527,7 @@ async function syncPluginUpdates(): Promise<{
 }
 
 export default function contribute(server: PluginServerContext) {
+  const removeGenui = contributeGenuiServer(server);
   server.registerSettings(gitWorkspaceSettings);
   void repoCacheService.init();
 
@@ -1104,6 +1106,7 @@ export default function contribute(server: PluginServerContext) {
     } catch {
       // ignore
     }
+    removeGenui();
     disposeTitles();
     disposeTurnBefore();
     disposeTurnAfter();

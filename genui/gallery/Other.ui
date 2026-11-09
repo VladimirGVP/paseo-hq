@@ -1,0 +1,11 @@
+Card("Review: src/worker/queue.ts", [
+  Findings([
+    {severity: "high", title: "A retry drops the job's payload", file: "src/worker/queue.ts", line: 88, detail: "requeue() passes only the id", fix: "Pass the payload too"},
+    {severity: "medium", title: "Backoff has no ceiling", file: "src/worker/queue.ts", line: 120, detail: "Delay doubles forever on a stuck job"}
+  ], comments: true, editable: true),
+  Row([
+    Button("Add a regression test", Queue("Add a regression test for the dropped payload")),
+    Button("Cap backoff at 5 min", Queue("Cap the backoff at 5 minutes"))
+  ]),
+  Row([Other(), Button("Fix these", Send("Fix the findings above."), variant: "primary")])
+])

@@ -1,6 +1,6 @@
 {
   "name": "paseo-hq",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Paseo Workspace HQ: projects, sessions, artifacts and team worker monitoring",
   "license": "MIT OR Apache-2.0",
   "author": "GNATOVSKIE",
@@ -19,11 +19,16 @@
     "shared",
     "server",
     "client",
-    "bin"
+    "bin",
+    "genui",
+    "NOTICE"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --test shared/*.test.mjs server/*.test.mjs client/*.test.mjs"
+    "test": "npm run test:hq && npm run test:genui",
+    "test:genui": "vitest run shared/genui server/genui client/genui-integration.test.ts --maxWorkers=1 --no-file-parallelism",
+    "smoke:genui": "node tests/genui/smoke.mjs",
+    "test:hq": "node --test shared/*.test.mjs server/*.test.mjs client/*.test.mjs"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^1.4.0",
@@ -34,9 +39,15 @@
     "@tanstack/react-query": "^5.107.1",
     "@types/node": "^22.0.0",
     "@types/react": "^19.1.4",
-    "react": "^19.0.0",
+    "@types/react-dom": "^19.3.0",
+    "esbuild": "^0.28.2",
+    "playwright-core": "^1.65.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
     "react-native": "^0.81.0",
+    "react-native-web": "^0.21.2",
     "typescript": "^5.0.0",
+    "vitest": "^4.1.11",
     "zod": "^3.22.0 || ^4.0.0"
   }
 }

@@ -1,0 +1,1 @@
+Card("Draft reply to the review", [Draft("Thanks, fixed in `a1b2c3d`:\n\n- the retry now keeps the payload\n- added a regression test\n\nCan you take another look?", "PR #42 reply")])
