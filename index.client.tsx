@@ -3,7 +3,6 @@ import {
   Animated,
   Easing,
   Image,
-  PanResponder,
   Pressable,
   ScrollView,
   Text,
@@ -678,254 +677,22 @@ function openUsageLimits(serverId?: string) {
   }
 }
 
-function DragGripHandle({
-  id,
-  index,
-  total,
-  onMoveDelta,
-  isCompact,
-  theme,
-  label,
-}: {
-  id: string;
-  index: number;
-  total: number;
-  onMoveDelta: (id: string, delta: number) => void;
-  isCompact: boolean;
-  theme: PluginTheme;
-  label: string;
-}) {
-  const c = theme.colors;
-  const [dragging, setDragging] = useState(false);
-  const accumDyRef = useRef(0);
-  const stepHeight = isCompact ? 48 : 42;
-
-  const panResponder = useMemo(
-    () =>
-      PanResponder.create({
-        onStartShouldSetPanResponder: () => true,
-        onStartShouldSetPanResponderCapture: () => true,
-        onMoveShouldSetPanResponder: (_evt, gesture) => Math.abs(gesture.dy) > 4,
-        onMoveShouldSetPanResponderCapture: (_evt, gesture) => Math.abs(gesture.dy) > 4,
-        onPanResponderGrant: () => {
-          setDragging(true);
-          accumDyRef.current = 0;
-        },
-        onPanResponderMove: (_evt, gesture) => {
-          const dy = gesture.dy - accumDyRef.current;
-          if (dy > stepHeight) {
-            onMoveDelta(id, 1);
-            accumDyRef.current += stepHeight;
-          } else if (dy < -stepHeight) {
-            onMoveDelta(id, -1);
-            accumDyRef.current -= stepHeight;
-          }
-        },
-        onPanResponderRelease: () => {
-          setDragging(false);
-          accumDyRef.current = 0;
-        },
-        onPanResponderTerminate: () => {
-          setDragging(false);
-          accumDyRef.current = 0;
-        },
-        onPanResponderTerminationRequest: () => false,
-      }),
-    [id, onMoveDelta, stepHeight]
-  );
-
-  return (
-    <View style={{ flexDirection: "row", alignItems: "center", gap: 2 }}>
-      <View
-        {...panResponder.panHandlers}
-        style={({
-          paddingHorizontal: isCompact ? 6 : 4,
-          paddingVertical: isCompact ? 8 : 6,
-          backgroundColor: dragging ? c.surface2 : "transparent",
-          borderRadius: 6,
-          alignItems: "center",
-          justifyContent: "center",
-          cursor: "grab",
-        } as any)}
-      >
-        <Text
-          style={{
-            color: dragging ? c.accent : c.foregroundMuted,
-            fontSize: isCompact ? 16 : 13,
-            fontWeight: "700",
-            userSelect: "none",
-          }}
-        >
-          ⠿
-        </Text>
-      </View>
-      <View style={{ flexDirection: "column", gap: 2 }}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={`Переместить ${label} выше`}
-          hitSlop={{ top: 8, bottom: 4, left: 8, right: 8 }}
-          disabled={index === 0}
-          onPress={() => void onMoveDelta(id, -1)}
-          style={({ pressed }) => ({
-            width: isCompact ? 28 : 22,
-            height: isCompact ? 20 : 16,
-            borderRadius: 5,
-            alignItems: "center",
-            justifyContent: "center",
-            backgroundColor: c.surface2,
-            borderWidth: 1,
-            borderColor: c.border,
-            opacity: index === 0 ? 0.25 : pressed ? 0.6 : 0.85,
-          })}
-        >
-          <Text style={{ color: c.foreground, fontSize: 10, fontWeight: "700", lineHeight: 10 }}>▲</Text>
-        </Pressable>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={`Переместить ${label} ниже`}
-          hitSlop={{ top: 4, bottom: 8, left: 8, right: 8 }}
-          disabled={index === total - 1}
-          onPress={() => void onMoveDelta(id, 1)}
-          style={({ pressed }) => ({
-            width: isCompact ? 28 : 22,
-            height: isCompact ? 20 : 16,
-            borderRadius: 5,
-            alignItems: "center",
-            justifyContent: "center",
-            backgroundColor: c.surface2,
-            borderWidth: 1,
-            borderColor: c.border,
-            opacity: index === total - 1 ? 0.25 : pressed ? 0.6 : 0.85,
-          })}
-        >
-          <Text style={{ color: c.foreground, fontSize: 10, fontWeight: "700", lineHeight: 10 }}>▼</Text>
-        </Pressable>
-      </View>
-    </View>
-  );
-}
-
-function useLongPressDrag({
-  id,
-  enabled,
-  onMoveDelta,
-  onTap,
-  stepHeight = 48,
-}: {
-  id: string;
-  enabled: boolean;
-  onMoveDelta: (id: string, delta: number) => void;
-  onTap: () => void;
-  stepHeight?: number;
-}) {
-  const [isDragging, setIsDragging] = useState(false);
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
-  const isDraggingRef = useRef(false);
-  const accumDyRef = useRef(0);
-  const movedRef = useRef(false);
-
-  const panResponder = useMemo(() => {
-    if (!enabled) return null;
-    return PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onStartShouldSetPanResponderCapture: () => false,
-      onMoveShouldSetPanResponder: (_evt, gesture) => isDraggingRef.current || Math.abs(gesture.dy) > 5,
-      onMoveShouldSetPanResponderCapture: () => isDraggingRef.current,
-      onPanResponderGrant: () => {
-        accumDyRef.current = 0;
-        isDraggingRef.current = false;
-        movedRef.current = false;
-        timerRef.current = setTimeout(() => {
-          isDraggingRef.current = true;
-          setIsDragging(true);
-          try {
-            if (typeof navigator !== "undefined" && navigator.vibrate) {
-              navigator.vibrate(35);
-            }
-          } catch {}
-        }, 260);
-      },
-      onPanResponderMove: (_evt, gesture) => {
-        if (!isDraggingRef.current) {
-          if (Math.abs(gesture.dx) > 6 || Math.abs(gesture.dy) > 6) {
-            movedRef.current = true;
-            if (timerRef.current) {
-              clearTimeout(timerRef.current);
-              timerRef.current = null;
-            }
-          }
-          return;
-        }
-        const dy = gesture.dy - accumDyRef.current;
-        if (dy > stepHeight) {
-          onMoveDelta(id, 1);
-          accumDyRef.current += stepHeight;
-          try {
-            if (typeof navigator !== "undefined" && navigator.vibrate) navigator.vibrate(15);
-          } catch {}
-        } else if (dy < -stepHeight) {
-          onMoveDelta(id, -1);
-          accumDyRef.current -= stepHeight;
-          try {
-            if (typeof navigator !== "undefined" && navigator.vibrate) navigator.vibrate(15);
-          } catch {}
-        }
-      },
-      onPanResponderRelease: () => {
-        if (timerRef.current) {
-          clearTimeout(timerRef.current);
-          timerRef.current = null;
-        }
-        if (isDraggingRef.current) {
-          isDraggingRef.current = false;
-          setIsDragging(false);
-        } else if (!movedRef.current) {
-          onTap();
-        }
-      },
-      onPanResponderTerminate: () => {
-        if (timerRef.current) {
-          clearTimeout(timerRef.current);
-          timerRef.current = null;
-        }
-        isDraggingRef.current = false;
-        setIsDragging(false);
-      },
-      onPanResponderTerminationRequest: () => !isDraggingRef.current,
-    });
-  }, [enabled, id, onMoveDelta, onTap, stepHeight]);
-
-  return { panResponder, isDragging };
-}
-
 function ProjectHeaderPressable({
   group,
   isOpen,
-  isManual,
   onToggleOpen,
-  onMoveProject,
   theme,
   layout,
   relativeTime,
 }: {
   group: ProjectGroup;
   isOpen: boolean;
-  isManual: boolean;
   onToggleOpen: () => void;
-  onMoveProject: (id: string, delta: number) => void;
   theme: PluginTheme;
   layout: PluginSidebarItemProps["layout"];
   relativeTime: (ms: number) => string;
 }) {
   const c = theme.colors;
-  const { panResponder, isDragging } = useLongPressDrag({
-    id: group.id,
-    enabled: isManual,
-    onMoveDelta: onMoveProject,
-    onTap: onToggleOpen,
-    stepHeight: layout.compact ? 52 : 46,
-  });
-
   const content = (
     <View
       style={{
@@ -935,7 +702,6 @@ function ProjectHeaderPressable({
         gap: 10,
         paddingVertical: 2,
         minWidth: 0,
-        opacity: isDragging ? 0.6 : 1,
       }}
     >
       <ProjectAvatar
@@ -975,23 +741,6 @@ function ProjectHeaderPressable({
     </View>
   );
 
-  if (isManual && panResponder) {
-    return (
-      <View
-        {...panResponder.panHandlers}
-        style={({
-          flex: 1,
-          flexDirection: "row",
-          alignItems: "center",
-          cursor: isDragging ? "grabbing" : "grab",
-          userSelect: "none",
-        } as any)}
-      >
-        {content}
-      </View>
-    );
-  }
-
   return (
     <Pressable
       accessibilityRole="button"
@@ -1008,56 +757,17 @@ function ProjectHeaderPressable({
 }
 
 function SessionRowPressable({
-  chatId,
-  isManual,
   onJump,
-  onMoveSession,
   theme,
   layout,
   children,
 }: {
-  chatId: string;
-  isManual: boolean;
   onJump: () => void;
-  onMoveSession: (id: string, delta: number) => void;
   theme: PluginTheme;
   layout: PluginSidebarItemProps["layout"];
   children: React.ReactNode;
 }) {
   const c = theme.colors;
-  const { panResponder, isDragging } = useLongPressDrag({
-    id: chatId,
-    enabled: isManual,
-    onMoveDelta: onMoveSession,
-    onTap: onJump,
-    stepHeight: layout.compact ? 44 : 38,
-  });
-
-  if (isManual && panResponder) {
-    return (
-      <View
-        {...panResponder.panHandlers}
-        style={({
-          flex: 1,
-          minWidth: 0,
-          flexDirection: "row",
-          alignItems: "center",
-          gap: 8,
-          paddingVertical: layout.compact ? 11 : 9,
-          paddingLeft: 9,
-          paddingRight: 8,
-          borderRadius: 9,
-          backgroundColor: isDragging ? c.surface2 : undefined,
-          opacity: isDragging ? 0.6 : 1,
-          cursor: isDragging ? "grabbing" : "grab",
-          userSelect: "none",
-        } as any)}
-      >
-        {children}
-      </View>
-    );
-  }
-
   return (
     <Pressable
       accessibilityRole="button"
@@ -1114,15 +824,6 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
   const [panelSettingsOpen, setPanelSettingsOpen] = useState(false);
   const [savingPanelSettings, setSavingPanelSettings] = useState(false);
   const [draftHeaderTitle, setDraftHeaderTitle] = useState("Штаб");
-  const [draftSessionsSortMode, setDraftSessionsSortMode] = useState<"auto" | "manual">("auto");
-  const [draggingProjectId, setDraggingProjectId] = useState<string | null>(null);
-  const [dragOverProjectId, setDragOverProjectId] = useState<string | null>(null);
-  const [draggingSessionId, setDraggingSessionId] = useState<string | null>(null);
-  const [dragOverSessionId, setDragOverSessionId] = useState<string | null>(null);
-  const touchProjSourceRef = useRef<string | null>(null);
-  const touchProjTargetRef = useRef<string | null>(null);
-  const touchSessSourceRef = useRef<string | null>(null);
-  const touchSessTargetRef = useRef<string | null>(null);
   const [expandedProjectIds, setExpandedProjectIds] = useState<Record<string, boolean>>({});
   const [expandedAllChats, setExpandedAllChats] = useState<Record<string, boolean>>({});
   const [showHiddenProjects, setShowHiddenProjects] = useState(false);
@@ -1326,27 +1027,10 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
         maxPrompt = Math.max(maxPrompt, chatLastPromptMs(ch, agentPromptMap));
       }
 
-      // Сортировка сессий внутри проекта:
-      // 1) Закрепленные в нашем виджете всегда наверху
-      // 2) Если ручной режим (manual): по сохраненному sessionOrder
-      // 3) Иначе - по последнему отправленному промпту (свежие выше)
-      const sessSortMode = g.meta.sessionsSortMode ?? "auto";
-      const sessOrder = g.meta.sessionOrder ?? [];
-      const sessOrderMap =
-        sessSortMode === "manual" && sessOrder.length > 0
-          ? new Map(sessOrder.map((id, idx) => [id, idx]))
-          : null;
-
       g.chats.sort((a, b) => {
         const aPin = Boolean(pinnedMap[a.id]);
         const bPin = Boolean(pinnedMap[b.id]);
         if (aPin !== bPin) return aPin ? -1 : 1;
-
-        if (sessOrderMap) {
-          const aIdx = sessOrderMap.has(a.id) ? sessOrderMap.get(a.id)! : 999999;
-          const bIdx = sessOrderMap.has(b.id) ? sessOrderMap.get(b.id)! : 999999;
-          if (aIdx !== bIdx) return aIdx - bIdx;
-        }
 
         const aTs = chatLastPromptMs(a, agentPromptMap);
         const bTs = chatLastPromptMs(b, agentPromptMap);
@@ -1361,22 +1045,7 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
       g.summaryBucket = best;
     }
 
-    // Сортировка проектов:
-    const projSortMode = serverState.projectsSortMode ?? "auto";
-    const projOrder = serverState.projectOrder ?? [];
-    if (projSortMode === "manual" && projOrder.length > 0) {
-      const projOrderMap = new Map(projOrder.map((id, idx) => [id, idx]));
-      list.sort((a, b) => {
-        const aIdx = projOrderMap.has(a.id) ? projOrderMap.get(a.id)! : 999999;
-        const bIdx = projOrderMap.has(b.id) ? projOrderMap.get(b.id)! : 999999;
-        if (aIdx !== bIdx) return aIdx - bIdx;
-        return b.lastPromptAt - a.lastPromptAt || a.name.localeCompare(b.name, "ru");
-      });
-    } else {
-      // По последнему промпту в любой их сессии, работа агентов не двигает
-      list.sort((a, b) => b.lastPromptAt - a.lastPromptAt || a.name.localeCompare(b.name, "ru"));
-    }
-
+    list.sort((a, b) => b.lastPromptAt - a.lastPromptAt || a.name.localeCompare(b.name, "ru"));
     return list;
   }, [projects, workspaces, archivedIds, serverState, agentBucketByWorkspace, agentTurnFinishMap, agentPromptMap]);
 
@@ -1569,7 +1238,6 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
     setDraftNewMode(group.meta.newSessionMode);
     setDraftHidden(group.meta.hidden);
     setDraftTitleModel(group.meta.sessionTitleModel ?? "first_line");
-    setDraftSessionsSortMode(group.meta.sessionsSortMode ?? "auto");
     setConfirmRemoveProject(false);
   };
 
@@ -1602,7 +1270,6 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
         newSessionMode: draftNewMode,
         hidden: draftHidden,
         sessionTitleModel: draftTitleModel === "first_line" ? null : draftTitleModel,
-        sessionsSortMode: draftSessionsSortMode,
       });
       setServerState((prev) => ({
         ...prev,
@@ -1617,182 +1284,6 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
     } finally {
       setSavingProject(false);
     }
-  };
-
-  const handleToggleProjectsSortMode = async (mode: "auto" | "manual") => {
-    if (savingPanelSettings) return;
-    setSavingPanelSettings(true);
-    setServerState((prev) => ({ ...prev, projectsSortMode: mode }));
-    try {
-      const updated = await updatePanelSettings({
-        projectsSortMode: mode,
-        projectIds: allGroups.map((g) => g.id),
-      });
-      setServerState((prev) => ({ ...prev, ...updated }));
-      toast.show(
-        mode === "manual"
-          ? "Включен ручной порядок проектов (перетаскивание)"
-          : "Включена автоматическая сортировка проектов",
-        { variant: "info" },
-      );
-    } catch (err) {
-      await reloadAll();
-      toast.error(err instanceof Error ? err.message : "Не удалось обновить режим сортировки");
-    } finally {
-      setSavingPanelSettings(false);
-    }
-  };
-
-  const handleReorderProjects = async (sourceId: string, targetId: string) => {
-    const currentIds = visibleGroups.map((g) => g.id);
-    const fromIndex = currentIds.indexOf(sourceId);
-    const toIndex = currentIds.indexOf(targetId);
-    if (fromIndex === -1 || toIndex === -1 || fromIndex === toIndex) return;
-
-    const nextIds = [...currentIds];
-    const [moved] = nextIds.splice(fromIndex, 1);
-    nextIds.splice(toIndex, 0, moved);
-
-    setServerState((prev) => ({ ...prev, projectOrder: nextIds }));
-    try {
-      const updated = await updatePanelSettings({
-        projectOrder: nextIds,
-        projectIds: allGroups.map((g) => g.id),
-      });
-      setServerState((prev) => ({ ...prev, ...updated }));
-    } catch (err) {
-      await reloadAll();
-      toast.error("Не удалось сохранить порядок проектов");
-    }
-  };
-
-  const handleMoveProject = async (projectId: string, delta: number) => {
-    const currentIds = visibleGroups.map((g) => g.id);
-    const idx = currentIds.indexOf(projectId);
-    if (idx === -1) return;
-    const targetIdx = idx + delta;
-    if (targetIdx < 0 || targetIdx >= currentIds.length) return;
-    await handleReorderProjects(projectId, currentIds[targetIdx]);
-  };
-
-  const handleReorderSessions = async (projectId: string, sourceId: string, targetId: string) => {
-    const group = allGroups.find((g) => g.id === projectId);
-    if (!group) return;
-    const currentIds = group.chats.map((c) => c.id);
-    const fromIndex = currentIds.indexOf(sourceId);
-    const toIndex = currentIds.indexOf(targetId);
-    if (fromIndex === -1 || toIndex === -1 || fromIndex === toIndex) return;
-
-    const nextIds = [...currentIds];
-    const [moved] = nextIds.splice(fromIndex, 1);
-    nextIds.splice(toIndex, 0, moved);
-
-    setServerState((prev) => {
-      const prevMeta = prev.projects[projectId] ?? {
-        avatarUri: null,
-        avatarEmoji: null,
-        avatarBg: null,
-        newSessionMode: "directory",
-        hidden: false,
-        sessionTitleModel: null,
-        sessionsSortMode: "manual",
-        sessionOrder: [],
-      };
-      return {
-        ...prev,
-        projects: {
-          ...prev.projects,
-          [projectId]: {
-            ...prevMeta,
-            sessionOrder: nextIds,
-          },
-        },
-      };
-    });
-
-    try {
-      const updated = await saveProject({
-        projectId,
-        sessionOrder: nextIds,
-      });
-      setServerState((prev) => ({ ...prev, ...updated }));
-    } catch (err) {
-      await reloadAll();
-      toast.error("Не удалось сохранить порядок сессий");
-    }
-  };
-
-  const handleMoveSession = async (projectId: string, sessionId: string, delta: number) => {
-    const group = allGroups.find((g) => g.id === projectId);
-    if (!group) return;
-    const currentIds = group.chats.map((c) => c.id);
-    const idx = currentIds.indexOf(sessionId);
-    if (idx === -1) return;
-    const targetIdx = idx + delta;
-    if (targetIdx < 0 || targetIdx >= currentIds.length) return;
-    await handleReorderSessions(projectId, sessionId, currentIds[targetIdx]);
-  };
-
-  const handleTouchStartProject = (projectId: string) => {
-    touchProjSourceRef.current = projectId;
-    touchProjTargetRef.current = null;
-    setDraggingProjectId(projectId);
-  };
-
-  const handleTouchMoveProject = (e: any) => {
-    if (!touchProjSourceRef.current) return;
-    const touch = e.touches?.[0];
-    if (!touch || typeof document === "undefined") return;
-    const el = document.elementFromPoint(touch.clientX, touch.clientY);
-    const targetEl = el?.closest?.("[data-project-id]");
-    const targetId = targetEl?.getAttribute?.("data-project-id");
-    if (targetId && targetId !== touchProjSourceRef.current) {
-      touchProjTargetRef.current = targetId;
-      setDragOverProjectId(targetId);
-    }
-  };
-
-  const handleTouchEndProject = () => {
-    const sourceId = touchProjSourceRef.current;
-    const targetId = touchProjTargetRef.current;
-    if (sourceId && targetId && sourceId !== targetId) {
-      void handleReorderProjects(sourceId, targetId);
-    }
-    touchProjSourceRef.current = null;
-    touchProjTargetRef.current = null;
-    setDraggingProjectId(null);
-    setDragOverProjectId(null);
-  };
-
-  const handleTouchStartSession = (sessionId: string) => {
-    touchSessSourceRef.current = sessionId;
-    touchSessTargetRef.current = null;
-    setDraggingSessionId(sessionId);
-  };
-
-  const handleTouchMoveSession = (e: any) => {
-    if (!touchSessSourceRef.current) return;
-    const touch = e.touches?.[0];
-    if (!touch || typeof document === "undefined") return;
-    const el = document.elementFromPoint(touch.clientX, touch.clientY);
-    const targetEl = el?.closest?.("[data-session-id]");
-    const targetId = targetEl?.getAttribute?.("data-session-id");
-    if (targetId && targetId !== touchSessSourceRef.current) {
-      touchSessTargetRef.current = targetId;
-      setDragOverSessionId(targetId);
-    }
-  };
-
-  const handleTouchEndSession = (projectId: string) => {
-    const sourceId = touchSessSourceRef.current;
-    const targetId = touchSessTargetRef.current;
-    if (sourceId && targetId && sourceId !== targetId) {
-      void handleReorderSessions(projectId, sourceId, targetId);
-    }
-    touchSessSourceRef.current = null;
-    touchSessTargetRef.current = null;
-    setDraggingSessionId(null);
-    setDragOverSessionId(null);
   };
 
   const openPanelSettings = () => {
@@ -2316,51 +1807,17 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
             const showAll = Boolean(expandedAllChats[group.id]);
             const displayedChats = showAll ? group.chats : group.chats.slice(0, 8);
             const moreCount = group.chats.length - displayedChats.length;
-            const isManualProjects = serverState.projectsSortMode === "manual";
-            const isManualSessions = group.meta.sessionsSortMode === "manual";
-            const isDragOverProj = dragOverProjectId === group.id;
-            const isDraggingProj = draggingProjectId === group.id;
 
             return (
               <View
                 key={group.id}
-                {...({
-                  dataSet: { projectId: group.id },
-                  onDragOver: (e: any) => {
-                    if (draggingProjectId && draggingProjectId !== group.id) {
-                      e.preventDefault();
-                      e.dataTransfer.dropEffect = "move";
-                    }
-                  },
-                  onDragEnter: (e: any) => {
-                    if (draggingProjectId && draggingProjectId !== group.id) {
-                      e.preventDefault();
-                      setDragOverProjectId(group.id);
-                    }
-                  },
-                  onDragLeave: (e: any) => {
-                    if (dragOverProjectId === group.id) {
-                      e.preventDefault();
-                      setDragOverProjectId(null);
-                    }
-                  },
-                  onDrop: (e: any) => {
-                    e.preventDefault();
-                    const sourceId = e.dataTransfer.getData("text/plain") || draggingProjectId;
-                    if (sourceId && sourceId !== group.id) {
-                      void handleReorderProjects(sourceId, group.id);
-                    }
-                    setDraggingProjectId(null);
-                    setDragOverProjectId(null);
-                  },
-                } as any)}
                 style={{
                   borderRadius: 11,
-                  backgroundColor: isDragOverProj ? c.surface2 : c.surface1,
+                  backgroundColor: c.surface1,
                   borderWidth: 1,
-                  borderColor: isDragOverProj ? c.accent : isOpen ? c.accent : c.border,
+                  borderColor: isOpen ? c.accent : c.border,
                   overflow: "hidden",
-                  opacity: isDraggingProj ? 0.45 : group.meta.hidden ? 0.65 : 1,
+                  opacity: group.meta.hidden ? 0.65 : 1,
                 }}
               >
                 {/* Строка проекта: аватарка + название + настройки рядом с плюсом */}
@@ -2368,30 +1825,16 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
                   style={{
                     flexDirection: "row",
                     alignItems: "center",
-                    paddingLeft: isManualProjects ? 6 : 10,
+                    paddingLeft: 10,
                     paddingRight: 8,
                     paddingVertical: 8,
                     gap: 6,
                   }}
                 >
-                  {isManualProjects ? (
-                    <DragGripHandle
-                      id={group.id}
-                      index={idx}
-                      total={visibleGroups.length}
-                      onMoveDelta={handleMoveProject}
-                      isCompact={layout.compact}
-                      theme={theme}
-                      label="проект"
-                    />
-                  ) : null}
-
                   <ProjectHeaderPressable
                     group={group}
                     isOpen={isOpen}
-                    isManual={isManualProjects}
                     onToggleOpen={() => toggleProjectOpen(group.id, idx === 0)}
-                    onMoveProject={handleMoveProject}
                     theme={theme}
                     layout={layout}
                     relativeTime={relativeTime}
@@ -2461,70 +1904,19 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
                       const agent = latestAgentByWorkspace[chat.id];
                       const family = resolveModelFamilyBadge(agent);
                       const title = chatTitle(chat, agent);
-                      const isDragOverSess = dragOverSessionId === chat.id;
-                      const isDraggingSess = draggingSessionId === chat.id;
 
                       return (
                         <View
                           key={chat.id}
-                          {...({
-                            dataSet: { sessionId: chat.id },
-                            onDragOver: (e: any) => {
-                              if (draggingSessionId && draggingSessionId !== chat.id) {
-                                e.preventDefault();
-                                e.dataTransfer.dropEffect = "move";
-                              }
-                            },
-                            onDragEnter: (e: any) => {
-                              if (draggingSessionId && draggingSessionId !== chat.id) {
-                                e.preventDefault();
-                                setDragOverSessionId(chat.id);
-                              }
-                            },
-                            onDragLeave: (e: any) => {
-                              if (dragOverSessionId === chat.id) {
-                                e.preventDefault();
-                                setDragOverSessionId(null);
-                              }
-                            },
-                            onDrop: (e: any) => {
-                              e.preventDefault();
-                              const sourceId = e.dataTransfer.getData("text/plain") || draggingSessionId;
-                              if (sourceId && sourceId !== chat.id) {
-                                void handleReorderSessions(group.id, sourceId, chat.id);
-                              }
-                              setDraggingSessionId(null);
-                              setDragOverSessionId(null);
-                            },
-                          } as any)}
                           style={{
                             flexDirection: "row",
                             alignItems: "center",
                             borderRadius: 9,
                             gap: 2,
-                            backgroundColor: isDragOverSess ? c.surface2 : undefined,
-                            opacity: isDraggingSess ? 0.45 : 1,
                           }}
                         >
-                          {isManualSessions ? (
-                            <View style={{ paddingLeft: 4 }}>
-                              <DragGripHandle
-                                id={chat.id}
-                                index={chatIdx}
-                                total={displayedChats.length}
-                                onMoveDelta={(id, delta) => void handleMoveSession(group.id, id, delta)}
-                                isCompact={layout.compact}
-                                theme={theme}
-                                label="сессию"
-                              />
-                            </View>
-                          ) : null}
-
                           <SessionRowPressable
-                            chatId={chat.id}
-                            isManual={isManualSessions}
                             onJump={() => jumpToWorkspace(chat.id)}
-                            onMoveSession={(id, delta) => void handleMoveSession(group.id, id, delta)}
                             theme={theme}
                             layout={layout}
                           >
@@ -3279,16 +2671,6 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
                     ]}
                     onValueChange={(v) => setDraftNewMode(v)}
                   />
-                  <SettingsSelect
-                    label="Сортировка сессий"
-                    hint="Как располагаются сессии внутри этого проекта"
-                    value={draftSessionsSortMode}
-                    options={[
-                      { label: "Автомат (по активности)", value: "auto" },
-                      { label: "Драг-н-дроп (ручной порядок)", value: "manual" },
-                    ]}
-                    onValueChange={(v) => setDraftSessionsSortMode(v as "auto" | "manual")}
-                  />
                   <TitleModelPicker
                     key={editingGroup.id}
                     theme={theme}
@@ -3841,31 +3223,6 @@ function SidebarEmbeddedProjects({ theme, layout, host, openScreen, openPopover 
                     {savingPanelSettings ? "Сохранение..." : "Сохранить название"}
                   </Text>
                 </Pressable>
-              </View>
-            </SettingsSection>
-
-            <SettingsSection title="Сортировка проектов">
-              <View
-                style={{
-                  padding: 12,
-                  borderRadius: 12,
-                  backgroundColor: c.surface2,
-                  borderWidth: 1,
-                  borderColor: c.border,
-                  gap: 10,
-                }}
-              >
-                <SettingsSelect
-                  label="Порядок проектов в боковой панели"
-                  hint="Автоматически по активности (свежие сверху) или ручной порядок (драг-н-дроп перетаскиванием)"
-                  value={serverState.projectsSortMode ?? "auto"}
-                  options={[
-                    { label: "Автомат (по активности)", value: "auto" },
-                    { label: "Драг-н-дроп (ручной порядок)", value: "manual" },
-                  ]}
-                  onValueChange={(v) => void handleToggleProjectsSortMode(v as "auto" | "manual")}
-                  disabled={savingPanelSettings}
-                />
               </View>
             </SettingsSection>
 

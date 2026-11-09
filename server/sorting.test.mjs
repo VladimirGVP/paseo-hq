@@ -93,25 +93,3 @@ test("projectMetaSchema and projectSaveInput validate sessionsSortMode and sessi
   assert.equal(parsedMeta.sessionsSortMode, "manual");
   assert.deepEqual(parsedMeta.sessionOrder, ["sess-2", "sess-1"]);
 });
-
-test("sorting logic: manual order overrides timestamp, auto order sorts by timestamp", () => {
-  const items = [
-    { id: "a", lastPromptAt: 100 },
-    { id: "b", lastPromptAt: 500 },
-    { id: "c", lastPromptAt: 300 },
-  ];
-
-  // Auto sort: descending by lastPromptAt
-  const autoSorted = [...items].sort((x, y) => y.lastPromptAt - x.lastPromptAt);
-  assert.deepEqual(autoSorted.map((i) => i.id), ["b", "c", "a"]);
-
-  // Manual sort by projectOrder: ["a", "c", "b"]
-  const manualOrder = ["a", "c", "b"];
-  const orderMap = new Map(manualOrder.map((id, idx) => [id, idx]));
-  const manualSorted = [...items].sort((x, y) => {
-    const xIdx = orderMap.has(x.id) ? orderMap.get(x.id) : 999999;
-    const yIdx = orderMap.has(y.id) ? orderMap.get(y.id) : 999999;
-    return xIdx - yIdx;
-  });
-  assert.deepEqual(manualSorted.map((i) => i.id), ["a", "c", "b"]);
-});
