@@ -13,7 +13,6 @@ import {
 } from "../../shared/genui/segment";
 import {
   GalleryScreen,
-  GallerySidebarItem,
   GalleryWorkspacePanel,
 } from "./gallery";
 import { TimelineBlockItem, TimelineTextItem } from "./live-ui";
@@ -51,12 +50,6 @@ export default function contribute(client: PluginClientContext) {
     id: "gallery",
     title: "Компоненты Штаба",
     Component: (props) => <GalleryScreen {...props} playAudio={playAudio} />,
-  });
-
-  client.addSidebarHeaderItem({
-    id: "gallery",
-    title: "Компоненты Штаба",
-    Component: GallerySidebarItem,
   });
 
   client.addWorkspacePanel({

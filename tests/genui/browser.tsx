@@ -14,6 +14,8 @@ Card("Штаб: интерактивный ответ", [
   Stepper($n, 1, 10, label: "Количество"),
   Metric("Итого", $n * 7),
   Table(["Проверка", "Значение"], rows),
+  Details("Проверки", [Acceptance(Load("/tmp/opencode/hq-genui/acceptance.json"))]),
+  Draft(Load("/tmp/opencode/hq-genui/draft.txt"), title: "Текст провайдеру"),
   Button("Применить", Send("Количество " + $n))
 ])`;
 const fence = (lang: string, body: string) => "```" + lang + "\n" + body + "\n```";

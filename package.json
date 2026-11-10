@@ -1,6 +1,6 @@
 {
   "name": "paseo-hq",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Paseo Workspace HQ: projects, sessions, artifacts and team worker monitoring",
   "license": "MIT OR Apache-2.0",
   "author": "GNATOVSKIE",
@@ -30,6 +30,7 @@
     "smoke:genui": "node tests/genui/smoke.mjs",
     "test:hq": "node --test shared/*.test.mjs server/*.test.mjs client/*.test.mjs",
     "check:genui-client": "node tests/genui/registration.mjs",
+    "check:genui-hermes": "node tests/genui/hermes-loaders.mjs",
     "test:git": "vitest run server/git-login.test.ts server/git-repositories.test.ts --maxWorkers=1",
     "smoke:git": "node tests/git/smoke.mjs"
   },

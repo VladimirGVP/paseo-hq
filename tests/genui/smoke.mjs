@@ -14,6 +14,8 @@ await writeFile(join(output, "rows.json"), JSON.stringify([["Load", "HQ file loa
 // The browser fixture uses this fixed path so its source remains reusable.
 await mkdir("/tmp/opencode/hq-genui", { recursive: true });
 await writeFile("/tmp/opencode/hq-genui/rows.json", JSON.stringify([["Load", "HQ file loaded"]]));
+await writeFile("/tmp/opencode/hq-genui/acceptance.json", JSON.stringify([{ name: "Multiple files stay separate", status: "passed" }]));
+await writeFile("/tmp/opencode/hq-genui/draft.txt", "Provider message loaded as text");
 const bundle = join(output, "browser.js");
 await build({ absWorkingDir: root, entryPoints: ["tests/genui/browser.tsx"], outfile: bundle, bundle: true, platform: "browser", jsx: "automatic", define: { "process.env.NODE_ENV": '"production"', __DEV__: "false" }, alias: { "react-native": "react-native-web", "@getpaseo/plugin/client": resolve(root, "tests/genui/host.tsx"), "@getpaseo/plugin/client/react-native": resolve(root, "tests/genui/host.tsx"), "@getpaseo/plugin/client/ui": resolve(root, "tests/genui/host.tsx") } });
 let daemon;
@@ -70,6 +72,10 @@ try {
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(`http://127.0.0.1:${server.address().port}/${dark ? "?dark" : ""}`);
     await page.getByText("HQ file loaded", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "Проверки", exact: true }).click();
+    await page.getByText("Multiple files stay separate", { exact: true }).waitFor();
+    await page.getByText("Provider message loaded as text", { exact: true }).waitFor();
+    assert.equal(await page.getByText(/Loading Acceptance|Draft markdown needs text/).count(), 0);
     await page.getByText("21", { exact: true }).waitFor();
     await page.getByRole("button", { name: "+", exact: true }).click();
     await page.getByText("28", { exact: true }).waitFor();
@@ -83,9 +89,10 @@ try {
     const registrations = await page.evaluate(() => Object.fromEntries(Object.entries(globalThis.registrations).map(([key, value]) => [key, value.map((entry) => entry.name ?? entry.id ?? entry.kind)])));
     assert.deepEqual(registrations.addSlashCommand, ["genui", "genui-demo", "genui-gallery"]);
     assert(registrations.addTimelineRenderer.includes("genui-block"));
+    assert(!registrations.addSidebarHeaderItem?.includes("gallery"));
     assert.deepEqual(errors, []);
     await page.screenshot({ path: join(output, `${name}.png`), fullPage: true });
-    results.push({ name: `${name}: Load, state, Send, sandbox, no overflow`, status: "passed" });
+    results.push({ name: `${name}: multiple Load, Acceptance, Draft, state, Send, sandbox, no overflow`, status: "passed" });
     await page.close();
   }
   const galleryPage = await browser.newPage({ viewport: { width: 390, height: 900 } });

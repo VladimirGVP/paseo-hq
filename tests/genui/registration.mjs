@@ -37,6 +37,7 @@ const loaded = exported.runPluginClientBundle("paseo-hq", source, { playAudio: a
 assert(loaded.timelineRenderers.some((entry) => entry.kind === "genui-block"));
 assert(loaded.surfaces.some((entry) => entry.id === "gallery"));
 assert(loaded.sidebarItems.header.some((entry) => entry.id === "projects-quick-header"));
+assert(!loaded.sidebarItems.header.some((entry) => entry.id === "gallery"), "The component catalog must not occupy the HQ sidebar");
 for (const name of ["genui", "genui-demo", "genui-gallery"]) {
  assert(loaded.clientSlashCommands.some((entry) => entry.name === name));
 }

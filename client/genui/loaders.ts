@@ -108,7 +108,9 @@ export function useLoadedData(scope: FileScope, program: Program | null): Readon
     const missing = requests.filter((request) => !data.has(dataKey(request)));
     if (missing.length === 0) return;
     let live = true;
-    for (const request of missing) {
+    // Hermes treats loop-local bindings as shared by async callbacks. Give each
+    // request its own function scope so a result cannot overwrite another file.
+    missing.forEach((request) => {
       const key = dataKey(request);
       loaders.data(request.path, request.raw).then(
         (loaded) => {
@@ -120,7 +122,7 @@ export function useLoadedData(scope: FileScope, program: Program | null): Readon
           if (live) setData((previous) => new Map(previous).set(key, { ok: false, error }));
         },
       );
-    }
+    });
     return () => {
       live = false;
     };
