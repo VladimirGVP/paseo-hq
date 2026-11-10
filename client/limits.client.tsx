@@ -52,6 +52,8 @@ import { isDashboardVisible } from "../shared/pills.shared";
 import { UsageHistorySurface } from "./history.client";
 import { setTooltipTitle, TooltipPressable as Pressable } from "./tooltip.client";
 import { UsageSettingsBody } from "./settings.client";
+import { GeminiApiLimitsCard } from "./gemini-api.client";
+import { GEMINI_API_QUERY_KEY } from "../shared/gemini-api.shared";
 
 const USAGE_CONFIG_QUERY_KEY = ["usage-config"];
 export const EM_DASH = "Нет данных";
@@ -1650,7 +1652,8 @@ function UsageLimitsBody({ theme, host, layout }: PluginSurfaceProps) {
   const isBusy = isFetching || isRefreshing;
   const handleRefresh = useCallback(() => {
     refreshUsage();
-  }, [refreshUsage]);
+    void queryClient.invalidateQueries({ queryKey: GEMINI_API_QUERY_KEY });
+  }, [refreshUsage, queryClient]);
 
   const queryError = error ?? refreshError;
   const now = useTickingClock();
@@ -1851,6 +1854,7 @@ function UsageLimitsBody({ theme, host, layout }: PluginSurfaceProps) {
       ) : (
         <ScrollView contentContainerStyle={styles.body}>
           {displayError === null ? null : <Text style={styles.error}>{displayError}</Text>}
+          <GeminiApiLimitsCard theme={theme} compact={compact} />
           <UsageProviderGrid
             snapshot={data}
             errorMessage={queryError === null ? null : queryError.message}

@@ -45,8 +45,11 @@ import {
 } from "../shared/config.shared";
 import { readUsageHistory } from "../shared/history.shared";
 import { readUsageLimits } from "../shared/limits.shared";
+import { readGeminiApiLimits } from "../shared/gemini-api.shared";
+import { readGeminiApiUsage } from "./gemini-api.server";
 
 export function contributeUsageServer(server: PluginServerContext) {
+  server.handle(readGeminiApiLimits, () => readGeminiApiUsage());
   server.handle(readUsageLimits, readLimits);
   server.handle(readUsageHistory, readHistory);
   server.handle(readUsageConfig, readConfig);
