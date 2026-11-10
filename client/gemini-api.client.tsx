@@ -3,6 +3,7 @@ import { openExternalUrl, useRpc } from "@getpaseo/plugin/client";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
+import { GeminiSetup } from "./gemini-setup.client";
 import {
   GEMINI_API_LINKS, GEMINI_API_QUERY_KEY, readGeminiApiLimits,
   type GeminiApiSnapshot,
@@ -30,6 +31,8 @@ export function GeminiApiReport({ theme, compact, snapshot, pending = false, err
 }) {
   const [expanded, setExpanded] = useState(false);
   const [linkError, setLinkError] = useState<string | null>(null);
+  const [showSetup, setShowSetup] = useState(false);
+  const live = snapshot?.source === "google-cloud-live";
   const colors = theme.colors;
   const small = { color: colors.foregroundMuted, fontSize: compact ? 11 : 12 };
   const text = { color: colors.foreground, fontSize: compact ? 13 : 14 };
@@ -39,26 +42,29 @@ export function GeminiApiReport({ theme, compact, snapshot, pending = false, err
   return <View testID="gemini-api-limits" style={{ borderWidth: 1, borderColor: colors.border, borderRadius: 12, backgroundColor: colors.surface1, padding: compact ? 12 : 16, gap: 12 }}>
     <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
       <Text style={{ ...text, fontWeight: "600", fontSize: 16 }}>Gemini API</Text>
-      {snapshot ? <Text style={small}>{snapshot.project} · {snapshot.tier === "free" ? "Free tier" : snapshot.tier === "paid" ? "Paid tier" : "Тариф не известен"}</Text> : null}
+      {snapshot ? <Text style={small}>{snapshot.project} · {live ? "Пул " : ""}{snapshot.tier === "free" ? "Free tier" : snapshot.tier === "paid" ? "Paid tier" : "Тариф не известен"}</Text> : null}
     </View>
     <Text style={small}>API озвучки и моделей. Квоты проекта общие для его ключей и пользователей, отдельно от Antigravity.</Text>
-    {pending ? <Text style={small}>Загрузка снимка API…</Text> : null}
-    {error ? <Text accessibilityRole="alert" style={{ ...text, color: colors.statusDanger }}>{error}{snapshot ? ". Показан предыдущий снимок." : ""}</Text> : null}
+    {pending ? <Text style={small}>Загрузка ограничений API…</Text> : null}
+    {error ? <Text accessibilityRole="alert" style={{ ...text, color: colors.statusDanger }}>{error}{snapshot ? ". Показаны предыдущие данные." : ""}</Text> : null}
     {snapshot ? <>
-      <Text style={small}>Снимок AI Studio от {new Date(snapshot.capturedAt).toLocaleString("ru-RU")}. Пики за {snapshot.periodDays} дней, не текущий остаток.</Text>
-      <Text style={{ ...small, color: colors.statusWarning }}>Автообновление Google не подключено. Текущие значения - по кнопке «Живые лимиты».</Text>
+      {live ? <Text style={small}>Живые ограничения Google Service Usage от {new Date(snapshot.capturedAt).toLocaleString("ru-RU")}. Обновление раз в минуту.</Text> : <>
+        <Text style={small}>Снимок AI Studio от {new Date(snapshot.capturedAt).toLocaleString("ru-RU")}. Пики за {snapshot.periodDays} дней, не текущий остаток.</Text>
+        <Text style={{ ...small, color: colors.statusWarning }}>Автообновление Google не подключено. Текущие значения - по кнопке «Живые лимиты».</Text>
+      </>}
+      {snapshot.notice ? <Text style={{ ...small, color: colors.statusWarning }}>{snapshot.notice}</Text> : null}
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 12 }}>
         {visible.map(model => <View key={model.id} style={{ flexGrow: 1, flexBasis: compact ? "100%" : 300, minWidth: 0, borderWidth: 1, borderColor: colors.border, borderRadius: 8, padding: 10, gap: 10 }}>
           <Text style={{ ...text, fontWeight: "600" }}>{model.label}</Text>
           <View style={{ flexDirection: "row", gap: 8 }}>
             {([ ["rpm", "RPM · в минуту"], ["tpm", "TPM · токены"], ["rpd", "RPD · в сутки"] ] as const).map(([key, label]) => {
-              const { peak, limit } = model[key];
+              const { peak, limit, unlimited } = model[key];
               const reached = peak !== null && limit !== null && (limit > 0 ? peak >= limit : peak > 0);
               const percent = peak === null || limit === null || limit <= 0 ? null : Math.min(100, peak / limit * 100);
               const color = reached ? colors.statusDanger : colors.accent;
               return <View key={key} style={{ flex: 1, minWidth: 0, gap: 5 }}>
                 <Text style={small}>{label}</Text>
-                <Text style={{ ...text, fontSize: compact ? 12 : 13, color: reached ? colors.statusDanger : colors.foreground }}>{amount(peak)} / {amount(limit)}</Text>
+                <Text style={{ ...text, fontSize: compact ? 12 : 13, color: reached ? colors.statusDanger : colors.foreground }}>{live ? unlimited ? "Без ограничения" : amount(limit) : `${amount(peak)} / ${amount(limit)}`}</Text>
                 {percent === null ? null : <View style={{ height: 4, borderRadius: 2, backgroundColor: colors.surface2, overflow: "hidden" }}><View style={{ height: 4, width: `${percent}%`, backgroundColor: color }} /></View>}
                 {reached ? <Text style={{ ...small, color: colors.statusDanger }}>Пик достиг лимита</Text> : null}
               </View>;
@@ -74,8 +80,10 @@ export function GeminiApiReport({ theme, compact, snapshot, pending = false, err
         setLinkError(null);
         void openExternalUrl(link.url).catch(() => setLinkError("Не удалось открыть Google. Попробуйте еще раз."));
       }} style={button}><Text style={{ ...text, color: colors.accent }}>{link.label}</Text></Pressable>)}
-      {snapshot && onRefresh ? <Pressable accessibilityRole="button" disabled={refreshing} onPress={onRefresh} style={button}><Text style={small}>{refreshing ? "Чтение снимка…" : "Перечитать снимок"}</Text></Pressable> : null}
+      {snapshot && onRefresh ? <Pressable accessibilityRole="button" disabled={refreshing} onPress={onRefresh} style={button}><Text style={small}>{refreshing ? "Обновление…" : live ? "Обновить ограничения" : "Перечитать снимок"}</Text></Pressable> : null}
+      <Pressable accessibilityRole="button" onPress={() => setShowSetup(!showSetup)} style={button}><Text style={{ ...text, color: colors.accent }}>{showSetup ? "Скрыть подключение" : "Как подключить"}</Text></Pressable>
     </View>
     {linkError ? <Text accessibilityRole="alert" style={{ ...small, color: colors.statusDanger }}>{linkError}</Text> : null}
+    {showSetup ? <GeminiSetup theme={theme} /> : null}
   </View>;
 }

@@ -1486,6 +1486,11 @@ export function mapGeminiModelQuotas(
   });
 }
 
+/** Reuse the CLI's existing Google OAuth login; no credential is copied or returned to clients. */
+export function getGoogleCloudAccessToken(): Promise<string> {
+  return acquireAccessToken(startDeadline(PROBE_BUDGET_MS));
+}
+
 export async function probeAntigravityQuota(): Promise<AntigravityQuota> {
   const deadline = startDeadline(PROBE_BUDGET_MS);
   const accessToken = await acquireAccessToken(deadline);

@@ -28,6 +28,7 @@ const fixture = {
   ],
 };
 let state = "snapshot";
+let configured;
 let daemon;
 if (live) {
   const { DaemonClient } = await import("@getpaseo/client/internal/daemon-client");
@@ -41,9 +42,11 @@ const server = createServer(async (request, response) => {
     if (request.url === "/rpc") {
       let raw = ""; for await (const chunk of request) raw += chunk;
       const { method, input } = JSON.parse(raw);
-      assert.equal(method, "usage.gemini-api.read");
-      if (state === "error") { response.writeHead(500); response.end("Неверный формат снимка Gemini API"); return; }
+      assert.ok(["usage.gemini-api.read", "usage.gemini-api.help", "usage.gemini-api.configure"].includes(method));
+      if (method === "usage.gemini-api.read" && state === "error") { response.writeHead(500); response.end("Неверный формат снимка Gemini API"); return; }
       const data = daemon ? await daemon.invokePluginRpc("paseo-hq", method, input)
+        : method === "usage.gemini-api.help" ? { markdown: await readFile(join(root, "docs/gemini-api.md"), "utf8"), config: { projectId: "example-project", projectNumber: "123456789", projectLabel: "Example", auth: "antigravity", quotaTier: "free", usageStatus: "not-connected", models: ["gemini-3.8-flash-tts"] } }
+        : method === "usage.gemini-api.configure" ? (configured = input, { saved: true })
         : { snapshot: state === "missing" ? null : fixture };
       await writeFile(join(output, live ? "rpc-live.json" : "rpc-fixture.json"), JSON.stringify(data, null, 2));
       response.setHeader("Content-Type", "application/json"); response.end(JSON.stringify(data));
@@ -69,9 +72,15 @@ try {
     const errors = []; page.on("pageerror", error => errors.push(error.message));
     await page.goto(`http://127.0.0.1:${server.address().port}/?${mode}`);
     await page.getByText("Gemini 3.8 Flash TTS", { exact: true }).waitFor();
-    await page.getByText("4 / 3", { exact: true }).first().waitFor();
-    await page.getByText(/Пики за 28 дней, не текущий остаток/).waitFor();
-    await page.getByText(/Автообновление Google не подключено/).waitFor();
+    if (live) {
+      await page.getByText(/Живые ограничения Google Service Usage от/).waitFor();
+      await page.getByText("3", { exact: true }).first().waitFor();
+      assert.equal(await page.getByText(/Снимок AI Studio от/).count(), 0);
+    } else {
+      await page.getByText("4 / 3", { exact: true }).first().waitFor();
+      await page.getByText(/Пики за 28 дней, не текущий остаток/).waitFor();
+      await page.getByText(/Автообновление Google не подключено/).waitFor();
+    }
     await page.getByRole("button", { name: /Все модели/ }).click();
     if (!live) await page.getByText("Unknown quota model", { exact: true }).waitFor();
     for (const [label, url] of [
@@ -99,8 +108,21 @@ try {
       await page.getByText(/Статистика API пока не подключена/).waitFor();
       assert.equal(await page.getByText("4 / 3", { exact: true }).count(), 0);
     }
+    await page.getByRole("button", { name: "Как подключить", exact: true }).click();
+    await page.getByText("Права и API", { exact: true }).waitFor();
+    await page.getByText("Ежемесячные кредиты Google AI Pro", { exact: true }).waitFor();
+    await page.getByLabel("Project number", { exact: true }).waitFor();
+    assert.ok((await page.getByLabel("Project number", { exact: true }).inputValue()).match(/^\d+$/));
+    if (!live) {
+      await page.getByLabel("Project ID", { exact: true }).fill("example-updated");
+      await page.getByRole("button", { name: "Google Cloud CLI", exact: true }).click();
+      await page.getByRole("button", { name: "Подключить живые ограничения", exact: true }).click();
+      await page.getByText(/Настройки сохранены/).waitFor();
+      assert.equal(configured.projectId, "example-updated"); assert.equal(configured.auth, "gcloud");
+    }
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
     assert.deepEqual(errors, []);
-    results.push({ name: `${width}px ${mode}: ${live ? "installed RPC and real snapshot" : "peaks, links, refresh, stale error and missing data"}`, status: "passed" });
+    results.push({ name: `${width}px ${mode}: ${live ? "installed live quota RPC, guide and stored project" : "peaks, links, refresh, stale error, missing data, guide and setup"}`, status: "passed" });
     await page.close();
   }
 } catch (error) {

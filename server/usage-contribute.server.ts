@@ -45,11 +45,25 @@ import {
 } from "../shared/config.shared";
 import { readUsageHistory } from "../shared/history.shared";
 import { readUsageLimits } from "../shared/limits.shared";
-import { readGeminiApiLimits } from "../shared/gemini-api.shared";
-import { readGeminiApiUsage } from "./gemini-api.server";
+import { readGeminiApiLimits, readGeminiApiHelp, writeGeminiApiConfig } from "../shared/gemini-api.shared";
+import { readGeminiApiUsage, geminiApiHelp, configureGeminiApi } from "./gemini-api.server";
+import { defineAgentTool } from "@getpaseo/plugin/server";
+import { z } from "zod";
 
 export function contributeUsageServer(server: PluginServerContext) {
   server.handle(readGeminiApiLimits, () => readGeminiApiUsage());
+  server.handle(readGeminiApiHelp, () => geminiApiHelp());
+  server.handle(writeGeminiApiConfig, input => configureGeminiApi(input));
+  const helpTool = defineAgentTool({
+    name: "hq_gemini_help", title: "Gemini API setup and limits",
+    description: "Read Paseo HQ's canonical guide and this host's configured Google project. Use when asked how to connect Gemini API quotas, Google AI Pro monthly credits, OAuth, billing or Monitoring. Does not expose credentials, change settings or enable billing.",
+    input: z.object({}),
+    async execute() {
+      const help = await geminiApiHelp();
+      return { text: help.markdown + "\n\nCurrent host configuration (no secrets):\n" + JSON.stringify(help.config, null, 2) };
+    },
+  });
+  server.before("agent.session_open", ({ request }) => ({ ...request, tools: [...request.tools, helpTool] }));
   server.handle(readUsageLimits, readLimits);
   server.handle(readUsageHistory, readHistory);
   server.handle(readUsageConfig, readConfig);
