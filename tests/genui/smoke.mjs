@@ -72,6 +72,17 @@ try {
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(`http://127.0.0.1:${server.address().port}/${dark ? "?dark" : ""}`);
     await page.getByText("HQ file loaded", { exact: true }).waitFor();
+    const fragment = page.getByText("важный фрагмент", { exact: true });
+    assert.equal(await fragment.evaluate(el => getComputedStyle(el).userSelect), "text", "formatted card text must allow selection even when the host disables it");
+    const selected = await fragment.evaluate(el => {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return selection.toString();
+    });
+    assert.equal(selected, "важный фрагмент");
     await page.getByRole("button", { name: "Проверки", exact: true }).click();
     await page.getByText("Multiple files stay separate", { exact: true }).waitFor();
     await page.getByText("Provider message loaded as text", { exact: true }).waitFor();

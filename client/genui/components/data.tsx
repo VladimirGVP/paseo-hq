@@ -68,7 +68,7 @@ export function Table({ props }: { props: Props }) {
                 key={`${col}:${idx}`}
                 style={{ flex: 1, minWidth: 110, paddingHorizontal: 10, paddingVertical: 8 }}
               >
-                <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12, fontWeight: "600" }}>
+                <Text selectable style={{ color: theme.colors.foregroundMuted, fontSize: 12, fontWeight: "600" }}>
                   {col}
                 </Text>
               </View>

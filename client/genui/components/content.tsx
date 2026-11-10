@@ -48,7 +48,7 @@ export function Callout({ props }: { props: Props }) {
       )}
       <View style={{ flex: 1, gap: 4 }}>
         {title ? (
-          <RNText style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>
+          <RNText selectable style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>
             {title}
           </RNText>
         ) : null}
@@ -138,7 +138,7 @@ export function Metric({ props }: { props: Props }) {
         gap: 2,
       }}
     >
-      <RNText style={{ color: theme.colors.foregroundMuted, fontSize: 11.5 }}>{label}</RNText>
+      <RNText selectable style={{ color: theme.colors.foregroundMuted, fontSize: 11.5 }}>{label}</RNText>
       <RNText
         selectable
         style={{
@@ -150,7 +150,7 @@ export function Metric({ props }: { props: Props }) {
         {value}
       </RNText>
       {note ? (
-        <RNText style={{ color: toneMutedColor(theme, t), fontSize: 11.5 }}>{note}</RNText>
+        <RNText selectable style={{ color: toneMutedColor(theme, t), fontSize: 11.5 }}>{note}</RNText>
       ) : null}
     </View>
   );
@@ -179,7 +179,7 @@ export function Badge({ props }: { props: Props }) {
       }}
     >
       <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: color }} />
-      <RNText style={{ color, fontSize: 11.5, fontWeight: "500" }}>{label}</RNText>
+      <RNText selectable style={{ color, fontSize: 11.5, fontWeight: "500" }}>{label}</RNText>
     </View>
   );
 }
@@ -220,7 +220,7 @@ export function KeyValue({ props }: { props: Props }) {
             borderTopColor: theme.colors.border,
           }}
         >
-          <RNText style={{ color: theme.colors.foregroundMuted, fontSize: 12.5, flexShrink: 0 }}>
+          <RNText selectable style={{ color: theme.colors.foregroundMuted, fontSize: 12.5, flexShrink: 0 }}>
             {k}
           </RNText>
           {isNode(v) ? (
@@ -278,7 +278,7 @@ export function LoadedImageView({
           justifyContent: "center",
         }}
       >
-        <RNText style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>Loading image…</RNText>
+        <RNText selectable style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>Loading image…</RNText>
       </View>
     );
   }
@@ -293,7 +293,7 @@ export function LoadedImageView({
           padding: 10,
         }}
       >
-        <RNText style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>
+        <RNText selectable style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>
           {state.error} ({src})
         </RNText>
       </View>
@@ -324,7 +324,7 @@ export function LoadedImageView({
         picture(height)
       )}
       {alt ? (
-        <RNText style={{ color: theme.colors.foregroundMuted, fontSize: 11.5 }}>{alt}</RNText>
+        <RNText selectable style={{ color: theme.colors.foregroundMuted, fontSize: 11.5 }}>{alt}</RNText>
       ) : null}
       {zoomed ? <ImageLightbox uri={state.url} title={alt ?? src} onClose={() => setZoomed(false)} /> : null}
     </View>
@@ -369,9 +369,9 @@ export function File({ props }: { props: Props }) {
         <Pressable accessibilityRole="button" onPress={() => setOpened(false)}>
           <RNText style={{ color: theme.colors.accent }}>Закрыть файл</RNText>
         </Pressable>
-        {result === null ? <RNText style={{ color: theme.colors.foregroundMuted }}>Загрузка файла...</RNText>
+        {result === null ? <RNText selectable style={{ color: theme.colors.foregroundMuted }}>Загрузка файла...</RNText>
           : result.ok ? <RNText selectable style={{ color: theme.colors.foreground, fontFamily: "monospace", fontSize: 12 }}>{result.text}</RNText>
-          : <RNText style={{ color: theme.colors.statusDanger }}>{result.error}</RNText>}
+          : <RNText selectable style={{ color: theme.colors.statusDanger }}>{result.error}</RNText>}
       </View> : null}
     </View>
   );
@@ -404,16 +404,16 @@ export function Entity({ props }: { props: Props }) {
         <RNText selectable style={{ color: theme.colors.foreground, fontSize: 14, fontWeight: "600", flex: 1 }}>
           {name}
         </RNText>
-        <RNText style={{ color: theme.colors.foregroundMuted, fontSize: 11, textTransform: "uppercase" }}>
+        <RNText selectable style={{ color: theme.colors.foregroundMuted, fontSize: 11, textTransform: "uppercase" }}>
           {kind}
         </RNText>
       </View>
-      {note ? <RNText style={{ color: theme.colors.foregroundMuted, fontSize: 12.5 }}>{note}</RNText> : null}
+      {note ? <RNText selectable style={{ color: theme.colors.foregroundMuted, fontSize: 12.5 }}>{note}</RNText> : null}
       {previewFacts.length > 0 ? (
         <View style={{ gap: 4 }}>
           {previewFacts.map((fact, idx) => (
             <View key={idx} style={{ flexDirection: "row", justifyContent: "space-between", gap: 8 }}>
-              <RNText style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>{fact.label}</RNText>
+              <RNText selectable style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>{fact.label}</RNText>
               <RNText selectable style={{ color: theme.colors.foreground, fontSize: 12, fontWeight: "500" }}>
                 {fact.value}
               </RNText>
@@ -430,7 +430,7 @@ export function Entity({ props }: { props: Props }) {
       ) : null}
       {url && /^https?:\/\//i.test(url) ? (
         <ExternalLink href={url}>
-          <RNText style={{ color: theme.colors.accent, fontSize: 12 }}>{url}</RNText>
+          <RNText selectable style={{ color: theme.colors.accent, fontSize: 12 }}>{url}</RNText>
         </ExternalLink>
       ) : null}
       {open ? (
@@ -439,7 +439,7 @@ export function Entity({ props }: { props: Props }) {
             <View style={{ gap: 8 }}>
               {rawPairs.map(([label, val], idx) => (
                 <View key={idx} style={{ flexDirection: "row", justifyContent: "space-between", gap: 12 }}>
-                  <RNText style={{ color: theme.colors.foregroundMuted, fontSize: 13 }}>{label}</RNText>
+                  <RNText selectable style={{ color: theme.colors.foregroundMuted, fontSize: 13 }}>{label}</RNText>
                   <RNText selectable style={{ color: theme.colors.foreground, fontSize: 13 }}>
                     {text(val)}
                   </RNText>
@@ -474,13 +474,13 @@ export function Sources({ props }: { props: Props }) {
             }}
           >
             <ExternalLink href={item.href}>
-              <RNText style={{ color: theme.colors.accent, fontSize: 13, fontWeight: "500" }}>
+              <RNText selectable style={{ color: theme.colors.accent, fontSize: 13, fontWeight: "500" }}>
                 [{item.number}] {item.title}
               </RNText>
             </ExternalLink>
-            <RNText style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>{item.domain}</RNText>
+            <RNText selectable style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>{item.domain}</RNText>
             {item.note ? (
-              <RNText style={{ color: theme.colors.foreground, fontSize: 12 }}>{item.note}</RNText>
+              <RNText selectable style={{ color: theme.colors.foreground, fontSize: 12 }}>{item.note}</RNText>
             ) : null}
           </View>
         ) : (
@@ -532,11 +532,11 @@ export function List({ props }: { props: Props }) {
                 <PaseoIcon name={iconName} size={15} color={toneColor(theme, t)} />
               ) : null}
               <View style={{ flex: 1, gap: 2 }}>
-                <RNText style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "500" }}>
+                <RNText selectable style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "500" }}>
                   {shown.title}
                 </RNText>
                 {shown.detail ? (
-                  <RNText style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>
+                  <RNText selectable style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>
                     <InlineMarkdown text={shown.detail} theme={theme} />
                   </RNText>
                 ) : null}
@@ -546,7 +546,7 @@ export function List({ props }: { props: Props }) {
               isNode(item.value) ? (
                 <RenderNode node={item.value} />
               ) : (
-                <RNText style={{ color: toneColor(theme, t), fontSize: 12.5, fontWeight: "500" }}>
+                <RNText selectable style={{ color: toneColor(theme, t), fontSize: 12.5, fontWeight: "500" }}>
                   {text(item.value)}
                 </RNText>
               )

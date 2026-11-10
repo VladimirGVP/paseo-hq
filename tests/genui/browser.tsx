@@ -11,6 +11,7 @@ const theme = { colors, mode: dark ? "dark" : "light" };
 const code = `$n = 3
 rows = Load("/tmp/opencode/hq-genui/rows.json")
 Card("Штаб: интерактивный ответ", [
+  Text("Выделяем **важный фрагмент** и обычный текст"),
   Stepper($n, 1, 10, label: "Количество"),
   Metric("Итого", $n * 7),
   Table(["Проверка", "Значение"], rows),
@@ -27,6 +28,10 @@ const client = new Proxy({}, { get: (_, key: string) => (entry: unknown) => { (r
 contribute(client as Parameters<typeof contribute>[0]);
 (globalThis as unknown as { registrations: unknown }).registrations = registrations;
 document.body.style.background = colors.surface0;
+// Model a host that disables selection by default (touch UI).
+const selectionStyle = document.createElement("style");
+selectionStyle.textContent = "* { -webkit-user-select: none; user-select: none; }";
+document.head.appendChild(selectionStyle);
 createRoot(document.getElementById("root")!).render(location.search.includes("gallery") ? <GalleryScreen {...{ theme, layout: { compact: innerWidth < 600, platform: "web" }, params: { component: "Card" }, playAudio: async () => {} } as unknown as Parameters<typeof GalleryScreen>[0]} /> : <div style={{ maxWidth: 900, margin: "auto", padding: 12 }}>
   {items.map((item, index) => <TimelineBlockItem key={index} {...{ agentId: "smoke", item, timestamp: new Date(0), theme, layout: { compact: innerWidth < 600, platform: "web" }, playAudio: async () => {} } as unknown as Parameters<typeof TimelineBlockItem>[0]} />)}
   <div id="sent" />

@@ -117,7 +117,7 @@ function BlockView({
       <View style={{ gap: 4 }}>
         {block.items.map((item, index) => (
           <View key={index} style={{ flexDirection: "row", gap: 8 }}>
-            <Text style={{ ...body, color: theme.colors.foregroundMuted }}>
+            <Text selectable style={{ ...body, color: theme.colors.foregroundMuted }}>
               {block.kind === "bullet" ? "•" : `${block.start + index}.`}
             </Text>
             <Text selectable style={{ ...body, flex: 1 }}>
@@ -142,14 +142,14 @@ function Spans({ content, theme }: { content: Inline[]; theme: PluginTheme }) {
       {content.map((span, index) => {
         if (span.kind === "bold") {
           return (
-            <Text key={index} style={{ fontWeight: "700" }}>
+            <Text selectable key={index} style={{ fontWeight: "700" }}>
               {span.text}
             </Text>
           );
         }
         if (span.kind === "italic") {
           return (
-            <Text key={index} style={{ fontStyle: "italic" }}>
+            <Text selectable key={index} style={{ fontStyle: "italic" }}>
               {span.text}
             </Text>
           );
@@ -157,6 +157,7 @@ function Spans({ content, theme }: { content: Inline[]; theme: PluginTheme }) {
         if (span.kind === "code") {
           return (
             <Text
+              selectable
               key={index}
               style={{
                 fontFamily: "monospace",
@@ -172,6 +173,7 @@ function Spans({ content, theme }: { content: Inline[]; theme: PluginTheme }) {
         if (span.kind === "link") {
           return (
             <Text
+              selectable
               key={index}
               accessibilityRole="link"
               onPress={() => void openExternalUrl(span.url)}
@@ -181,7 +183,7 @@ function Spans({ content, theme }: { content: Inline[]; theme: PluginTheme }) {
             </Text>
           );
         }
-        return <Text key={index}>{span.text}</Text>;
+        return <Text selectable key={index}>{span.text}</Text>;
       })}
     </>
   );
