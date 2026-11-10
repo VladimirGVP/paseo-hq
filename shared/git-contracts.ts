@@ -74,6 +74,7 @@ export const TriggerSyncRpc = defineRpc({
     success: z.boolean(),
     lastSyncedAt: z.number(),
     count: z.number(),
+    errors: z.array(z.string()).default([]),
     auth: z.object({
       github: AuthStatusSchema,
       gitlab: AuthStatusSchema,
@@ -97,4 +98,20 @@ export const CreateWorkspaceRpc = defineRpc({
     title: z.string(),
     localPath: z.string(),
   }),
+});
+
+export const GitLoginStateSchema = z.object({
+  id: z.string(), provider: z.enum(["github", "gitlab"]), host: z.string(),
+  state: z.enum(["starting", "waiting", "complete", "failed", "cancelled"]),
+  code: z.string().optional(), verificationUrl: z.string().optional(), error: z.string().optional(),
+});
+export type GitLoginState = z.infer<typeof GitLoginStateSchema>;
+export const StartGitLoginRpc = defineRpc({
+  name: "git.login-start", input: z.object({ provider: z.enum(["github", "gitlab"]), gitlabUrl: z.string().optional() }), output: GitLoginStateSchema,
+});
+export const GetGitLoginRpc = defineRpc({
+  name: "git.login-status", input: z.object({ id: z.string().min(1) }), output: GitLoginStateSchema,
+});
+export const CancelGitLoginRpc = defineRpc({
+  name: "git.login-cancel", input: z.object({ id: z.string().min(1) }), output: GitLoginStateSchema,
 });

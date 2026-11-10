@@ -14,6 +14,7 @@ import {
 } from "./git-service.server";
 
 interface CacheData {
+  errors?: string[];
   lastSyncedAt: number;
   github: RepoItem[];
   gitlab: Record<string, RepoItem[]>; // host -> repos
@@ -25,16 +26,24 @@ interface CacheData {
 
 const CACHE_FILE = path.join(os.homedir(), ".paseo", "git-workspace-cache.json");
 
-class RepoCacheService {
+export class RepoCacheService {
   private cache: CacheData = {
     lastSyncedAt: 0,
     github: [],
     gitlab: {},
     auth: {},
   };
-  private isSyncing = false;
+  private epoch = 0;
   private syncTimer: NodeJS.Timeout | null = null;
   private initialized = false;
+  constructor(private readonly cacheFile: string = CACHE_FILE) {}
+  private syncPromise: ReturnType<RepoCacheService["performSync"]> | null = null;
+
+  clear() {
+    this.epoch++;
+    this.syncPromise = null;
+    this.cache = { lastSyncedAt: 0, github: [], gitlab: {}, auth: {} };
+  }
 
   async init(gitlabUrl?: string, cloneDir?: string) {
     if (this.initialized) return;
@@ -42,7 +51,7 @@ class RepoCacheService {
 
     // Load from disk
     try {
-      const data = await fs.readFile(CACHE_FILE, "utf-8");
+      const data = await fs.readFile(this.cacheFile, "utf-8");
       const parsed = JSON.parse(data) as CacheData;
       if (parsed && typeof parsed.lastSyncedAt === "number") {
         this.cache = parsed;
@@ -53,12 +62,12 @@ class RepoCacheService {
 
     // Initial background sync
     setTimeout(() => {
-      void this.syncAll(gitlabUrl, cloneDir);
+      void this.syncAll(gitlabUrl, cloneDir).catch((error) => console.error("[git-workspace] Background sync failed", error));
     }, 500);
 
     // Periodic sync every 3 minutes
     this.syncTimer = setInterval(() => {
-      void this.syncAll(gitlabUrl, cloneDir);
+      void this.syncAll(gitlabUrl, cloneDir).catch((error) => console.error("[git-workspace] Background sync failed", error));
     }, 3 * 60 * 1000);
   }
 
@@ -85,6 +94,8 @@ class RepoCacheService {
 
     if (!this.cache.auth) this.cache.auth = {};
     if (!this.cache.auth.gitlab) this.cache.auth.gitlab = {};
+    if (this.cache.auth.github?.user !== gh.user || !gh.loggedIn) this.cache.github = [];
+    if (this.cache.auth.gitlab[host]?.user !== gl.user || !gl.loggedIn) this.cache.gitlab[host] = [];
     this.cache.auth.github = gh;
     this.cache.auth.gitlab[host] = gl;
 
@@ -93,11 +104,16 @@ class RepoCacheService {
   }
 
   async syncAll(gitlabUrl?: string, cloneDir?: string): Promise<{ lastSyncedAt: number; auth: { github: AuthStatus; gitlab: AuthStatus } }> {
-    if (this.isSyncing) {
-      const auth = await this.getAuth(gitlabUrl, false);
-      return { lastSyncedAt: this.cache.lastSyncedAt, auth };
+    if (this.syncPromise) {
+      return this.syncPromise;
     }
-    this.isSyncing = true;
+    const pending = this.performSync(gitlabUrl, cloneDir);
+    this.syncPromise = pending;
+    try { return await pending; } finally { if (this.syncPromise === pending) this.syncPromise = null; }
+  }
+
+  private async performSync(gitlabUrl?: string, cloneDir?: string): Promise<{ lastSyncedAt: number; auth: { github: AuthStatus; gitlab: AuthStatus } }> {
+    const epoch = this.epoch;
     const baseDir = resolveCloneDir(cloneDir);
     const host = parseGitLabHost(gitlabUrl);
 
@@ -109,30 +125,38 @@ class RepoCacheService {
         fetchGitLabRepos(undefined, gitlabUrl, baseDir),
       ]);
 
+      if (epoch !== this.epoch) return { lastSyncedAt: this.cache.lastSyncedAt, auth: { github: { installed: true, loggedIn: false }, gitlab: { installed: true, loggedIn: false } } };
       if (!this.cache.auth) this.cache.auth = {};
       if (!this.cache.auth.gitlab) this.cache.auth.gitlab = {};
 
       if (ghAuth.status === "fulfilled") {
+        if (this.cache.auth.github?.user !== ghAuth.value.user || !ghAuth.value.loggedIn) this.cache.github = [];
         this.cache.auth.github = ghAuth.value;
       }
       if (glAuth.status === "fulfilled") {
+        if (this.cache.auth.gitlab[host]?.user !== glAuth.value.user || !glAuth.value.loggedIn) this.cache.gitlab[host] = [];
         this.cache.auth.gitlab[host] = glAuth.value;
       }
 
-      if (ghRepos.status === "fulfilled" && ghRepos.value.length > 0) {
-        this.cache.github = this.mergeRepos(this.cache.github, ghRepos.value);
+      this.cache.errors = [];
+      if (ghAuth.status === "fulfilled" && ghAuth.value.error) this.cache.errors.push("GitHub: " + ghAuth.value.error);
+      if (glAuth.status === "fulfilled" && glAuth.value.error) this.cache.errors.push("GitLab: " + glAuth.value.error);
+      if (ghRepos.status === "fulfilled" && ghAuth.status === "fulfilled" && ghAuth.value.loggedIn) {
+        this.cache.github = ghRepos.value;
+      } else if (ghRepos.status === "rejected") {
+        this.cache.errors.push("GitHub: " + String(ghRepos.reason instanceof Error ? ghRepos.reason.message : ghRepos.reason));
       }
-
-      if (glRepos.status === "fulfilled" && glRepos.value.length > 0) {
-        this.cache.gitlab[host] = this.mergeRepos(this.cache.gitlab[host] || [], glRepos.value);
+      if (glRepos.status === "fulfilled" && glAuth.status === "fulfilled" && glAuth.value.loggedIn) {
+        this.cache.gitlab[host] = glRepos.value;
+      } else if (glRepos.status === "rejected") {
+        this.cache.errors.push("GitLab: " + String(glRepos.reason instanceof Error ? glRepos.reason.message : glRepos.reason));
       }
 
       this.cache.lastSyncedAt = Date.now();
       await this.persist();
     } catch (err: unknown) {
-      console.error("[git-workspace] Sync error:", err);
-    } finally {
-      this.isSyncing = false;
+      this.cache.errors = [err instanceof Error ? err.message : String(err)];
+      throw err;
     }
 
     const auth = {
@@ -145,22 +169,11 @@ class RepoCacheService {
 
   private async persist() {
     try {
-      await fs.mkdir(path.dirname(CACHE_FILE), { recursive: true });
-      await fs.writeFile(CACHE_FILE, JSON.stringify(this.cache, null, 2), "utf-8");
+      await fs.mkdir(path.dirname(this.cacheFile), { recursive: true });
+      await fs.writeFile(this.cacheFile, JSON.stringify(this.cache, null, 2), { encoding: "utf-8", mode: 0o600 });
     } catch (err: unknown) {
       console.error("[git-workspace] Persist error:", err);
     }
-  }
-
-  private mergeRepos(existing: RepoItem[], incoming: RepoItem[]): RepoItem[] {
-    const map = new Map<string, RepoItem>();
-    for (const item of existing) {
-      map.set(item.id, item);
-    }
-    for (const item of incoming) {
-      map.set(item.id, item);
-    }
-    return Array.from(map.values());
   }
 
   async getRepos(params: {
@@ -173,22 +186,25 @@ class RepoCacheService {
     repos: RepoItem[];
     lastSyncedAt: number;
     isSyncing: boolean;
+    errors: string[];
     auth: { github: AuthStatus; gitlab: AuthStatus };
   }> {
     const baseDir = resolveCloneDir(params.cloneDir);
     const host = parseGitLabHost(params.gitlabUrl);
 
     if (params.forceRefresh || this.cache.lastSyncedAt === 0) {
-      void this.syncAll(params.gitlabUrl, params.cloneDir);
+      await this.syncAll(params.gitlabUrl, params.cloneDir);
+    } else if (this.syncPromise) {
+      await this.syncPromise;
     }
 
     let all: RepoItem[] = [];
 
-    if (params.provider === "all" || params.provider === "github") {
+    if (!params.provider || params.provider === "all" || params.provider === "github") {
       all.push(...this.cache.github);
     }
 
-    if (params.provider === "all" || params.provider === "gitlab") {
+    if (!params.provider || params.provider === "all" || params.provider === "gitlab") {
       const glList = this.cache.gitlab[host] || [];
       all.push(...glList);
     }
@@ -227,7 +243,8 @@ class RepoCacheService {
     return {
       repos: filtered,
       lastSyncedAt: this.cache.lastSyncedAt,
-      isSyncing: this.isSyncing,
+      isSyncing: this.syncPromise !== null,
+      errors: this.cache.errors ?? [],
       auth,
     };
   }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -14,6 +14,7 @@ import {
   type PluginSurfaceProps,
 } from "@getpaseo/plugin/client";
 import { useToast } from "@getpaseo/plugin/client/react-native";
+import { GitAuthCard } from "./git-auth-card";
 import { gitWorkspaceSettings } from "../shared/git-settings";
 import {
   ListReposRpc,
@@ -52,10 +53,13 @@ export function GitWorkspaceSurface({ theme, layout }: PluginSurfaceProps) {
   const triggerSync = useRpc(TriggerSyncRpc);
   const createWorkspace = useRpc(CreateWorkspaceRpc);
 
+  const requestSequence = useRef(0);
+  const loadedScope = useRef<string | null>(null);
   const [provider, setProvider] = useState<"all" | "github" | "gitlab">("all");
   const [search, setSearch] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [repos, setRepos] = useState<RepoItem[]>([]);
+  const [syncErrors, setSyncErrors] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [lastSyncedAt, setLastSyncedAt] = useState<number | undefined>(undefined);
@@ -75,6 +79,7 @@ export function GitWorkspaceSurface({ theme, layout }: PluginSurfaceProps) {
   // Load Repos and Auth status from cache
   const loadRepos = useCallback(
     async (forceRefresh = false) => {
+      const request = ++requestSequence.current;
       if (forceRefresh) setLoading(true);
       try {
         const res = await listRepos({
@@ -84,7 +89,9 @@ export function GitWorkspaceSurface({ theme, layout }: PluginSurfaceProps) {
           cloneDir,
           forceRefresh,
         });
+        if (request !== requestSequence.current) return;
         setRepos(res.repos);
+        setSyncErrors(res.errors ?? []);
         setLastSyncedAt(res.lastSyncedAt);
         setIsSyncing(Boolean(res.isSyncing));
         if (res.auth) {
@@ -94,15 +101,18 @@ export function GitWorkspaceSurface({ theme, layout }: PluginSurfaceProps) {
         const msg = err instanceof Error ? err.message : String(err);
         toast.error(`Не удалось загрузить: ${msg}`);
       } finally {
-        setLoading(false);
+        if (request === requestSequence.current) setLoading(false);
       }
     },
     [listRepos, provider, debouncedQuery, gitlabUrl, cloneDir, toast],
   );
 
   useEffect(() => {
-    void loadRepos();
-  }, [loadRepos]);
+    const scope = `${gitlabUrl}|${cloneDir}`;
+    const first = loadedScope.current !== scope;
+    loadedScope.current = scope;
+    void loadRepos(first);
+  }, [loadRepos, gitlabUrl, cloneDir]);
 
   // Manual trigger sync
   const handleManualSync = async () => {
@@ -113,7 +123,9 @@ export function GitWorkspaceSurface({ theme, layout }: PluginSurfaceProps) {
       if (res.auth) {
         setAuthStatus(res.auth);
       }
-      toast.show(`Синхронизировано: ${res.count} проектов`, { variant: "success" });
+      setSyncErrors(res.errors);
+      if (res.success) toast.show(`Синхронизировано: ${res.count} проектов`, { variant: "success" });
+      else toast.error("Не все репозитории удалось загрузить. Подробности под подключениями.");
       await loadRepos();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -163,7 +175,8 @@ export function GitWorkspaceSurface({ theme, layout }: PluginSurfaceProps) {
           gap: 12,
         },
         headerRow: {
-          flexDirection: "row",
+          flexDirection: layout.compact ? "column" : "row",
+          gap: 8,
           justifyContent: "space-between",
           alignItems: "center",
         },
@@ -216,7 +229,7 @@ export function GitWorkspaceSurface({ theme, layout }: PluginSurfaceProps) {
           color: theme.colors.foreground,
         },
         searchBox: {
-          flexDirection: "row",
+          flexDirection: layout.compact ? "column" : "row",
           gap: 8,
           alignItems: "center",
         },
@@ -233,6 +246,7 @@ export function GitWorkspaceSurface({ theme, layout }: PluginSurfaceProps) {
         },
         filterTabs: {
           flexDirection: "row",
+          flexWrap: "wrap",
           gap: 6,
         },
         filterTab: {
@@ -271,6 +285,7 @@ export function GitWorkspaceSurface({ theme, layout }: PluginSurfaceProps) {
         },
         repoTitleRow: {
           flexDirection: "row",
+          flexWrap: "wrap",
           alignItems: "center",
           gap: 6,
           flex: 1,
@@ -285,6 +300,7 @@ export function GitWorkspaceSurface({ theme, layout }: PluginSurfaceProps) {
           color: theme.colors.foregroundMuted,
         },
         repoName: {
+          flexShrink: 1,
           fontSize: 14,
           fontWeight: "600",
           color: theme.colors.foreground,
@@ -296,6 +312,8 @@ export function GitWorkspaceSurface({ theme, layout }: PluginSurfaceProps) {
         },
         repoFooter: {
           flexDirection: "row",
+          flexWrap: "wrap",
+          gap: 8,
           justifyContent: "space-between",
           alignItems: "center",
           marginTop: 2,
@@ -354,36 +372,12 @@ export function GitWorkspaceSurface({ theme, layout }: PluginSurfaceProps) {
         </View>
       </View>
 
-      {/* CLI Auth Status */}
-      <View style={styles.authRow}>
-        <View style={styles.authBadge}>
-          <Text style={styles.authText}>GitHub:</Text>
-          {authStatus.github?.loggedIn ? (
-            <Text style={[styles.authText, { color: theme.colors.statusSuccess }]}>
-              @{authStatus.github.user}
-            </Text>
-          ) : (
-            <Text style={[styles.authText, { color: theme.colors.statusDanger }]}>
-              вход не выполнен
-            </Text>
-          )}
-        </View>
-
-        <View style={styles.authBadge}>
-          <Text style={styles.authText}>
-            GitLab ({authStatus.gitlab?.host || "gitlab.com"}):
-          </Text>
-          {authStatus.gitlab?.loggedIn ? (
-            <Text style={[styles.authText, { color: theme.colors.statusSuccess }]}>
-              @{authStatus.gitlab.user}
-            </Text>
-          ) : (
-            <Text style={[styles.authText, { color: theme.colors.statusDanger }]}>
-              вход не выполнен
-            </Text>
-          )}
-        </View>
+      <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>Подключения к этому серверу Paseo</Text>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10 }}>
+        <GitAuthCard provider="github" status={authStatus.github} gitlabUrl={gitlabUrl} theme={theme} onConnected={handleManualSync} />
+        <GitAuthCard provider="gitlab" status={authStatus.gitlab} gitlabUrl={gitlabUrl} theme={theme} onConnected={handleManualSync} />
       </View>
+      {syncErrors.map((message) => <Text key={message} selectable style={{ color: theme.colors.statusDanger, fontSize: 12 }}>{message}</Text>)}
 
       {/* Search and Filter */}
       <View style={styles.searchBox}>
@@ -419,6 +413,7 @@ export function GitWorkspaceSurface({ theme, layout }: PluginSurfaceProps) {
         </View>
       </View>
 
+      <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>Личные репозитории, организации и группы с доступом у подключенного аккаунта</Text>
       {/* Repo list */}
       <ScrollView style={{ flex: 1 }}>
         {loading && repos.length === 0 ? (

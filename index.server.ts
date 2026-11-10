@@ -65,11 +65,15 @@ import { readAllWorkers } from "./server/workers";
 import { contributeUsageServer } from "./server/usage-contribute.server";
 import { gitWorkspaceSettings } from "./shared/git-settings";
 import {
+  StartGitLoginRpc,
+  GetGitLoginRpc,
+  CancelGitLoginRpc,
   CheckAuthRpc,
   ListReposRpc,
   TriggerSyncRpc,
   CreateWorkspaceRpc,
 } from "./shared/git-contracts";
+import { GitLoginService } from "./server/git-login.server";
 import { cloneAndCreateWorkspace } from "./server/git-service.server";
 import { repoCacheService } from "./server/git-cache.server";
 import { read as readServicesRpc } from "./shared/services-contracts";
@@ -527,6 +531,17 @@ async function syncPluginUpdates(): Promise<{
 }
 
 export default function contribute(server: PluginServerContext) {
+  const gitLogin = new GitLoginService();
+  const completedGitLogins = new Set<string>();
+  server.handle(StartGitLoginRpc, ({ provider, gitlabUrl }) => gitLogin.start(provider, gitlabUrl));
+  server.handle(GetGitLoginRpc, async ({ id }) => {
+    const state = gitLogin.get(id);
+    if (state.state === "complete" && !completedGitLogins.has(id)) {
+      completedGitLogins.add(id); repoCacheService.clear();
+    }
+    return state;
+  });
+  server.handle(CancelGitLoginRpc, ({ id }) => gitLogin.cancel(id));
   const removeGenui = contributeGenuiServer(server);
   server.registerSettings(gitWorkspaceSettings);
   void repoCacheService.init();
@@ -1023,7 +1038,7 @@ export default function contribute(server: PluginServerContext) {
   });
 
   server.handle(ListReposRpc, async (input) => {
-    const { repos, lastSyncedAt, isSyncing, auth } = await repoCacheService.getRepos({
+    const { repos, lastSyncedAt, isSyncing, auth, errors } = await repoCacheService.getRepos({
       provider: input.provider,
       query: input.query,
       gitlabUrl: input.gitlabUrl,
@@ -1036,19 +1051,21 @@ export default function contribute(server: PluginServerContext) {
       lastSyncedAt,
       isSyncing,
       auth,
+      errors,
     };
   });
 
   server.handle(TriggerSyncRpc, async (input) => {
     const { lastSyncedAt, auth } = await repoCacheService.syncAll(input.gitlabUrl, input.cloneDir);
-    const { repos } = await repoCacheService.getRepos({
+    const { repos, errors } = await repoCacheService.getRepos({
       gitlabUrl: input.gitlabUrl,
       cloneDir: input.cloneDir,
     });
     return {
-      success: true,
+      success: errors.length === 0,
       lastSyncedAt,
       count: repos.length,
+      errors,
       auth,
     };
   });
@@ -1106,6 +1123,7 @@ export default function contribute(server: PluginServerContext) {
     } catch {
       // ignore
     }
+    gitLogin.dispose();
     removeGenui();
     disposeTitles();
     disposeTurnBefore();

@@ -1,12 +1,33 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import fs from "node:fs/promises";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { z } from "zod";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import type { RepoItem } from "../shared/git-contracts";
 
 const exec = promisify(execFile);
+
+export function gitCliExecutable(provider: "github" | "gitlab"): string {
+  if (provider === "github") return "gh";
+  const local = path.join(os.homedir(), ".local/bin/glab");
+  return existsSync(local) ? local : "glab";
+}
+
+async function repositoryPages(provider: "github" | "gitlab", endpoint: string, host?: string): Promise<unknown[]> {
+  const all: unknown[] = [];
+  for (let page = 1; ; page++) {
+    const args = ["api", `${endpoint}&per_page=100&page=${page}`];
+    if (host) args.push("--hostname", host);
+    const { stdout } = await exec(gitCliExecutable(provider), args, { timeout: 30_000, maxBuffer: 16 * 1024 * 1024 });
+    const items: unknown = JSON.parse(stdout);
+    if (!Array.isArray(items)) throw new Error(`${provider}: unexpected repository list response`);
+    all.push(...items);
+    if (items.length < 100) return all;
+  }
+}
 
 export function parseGitLabHost(urlOrHost?: string): string {
   if (!urlOrHost || !urlOrHost.trim()) return "gitlab.com";
@@ -33,13 +54,12 @@ export async function checkGitHubAuth(): Promise<{
   error?: string;
 }> {
   try {
-    const { stdout, stderr } = await exec("gh", ["auth", "status"]);
-    const output = `${stdout}\n${stderr}`;
-    const userMatch = output.match(/Logged in to [^ ]+ account ([^ (]+)/i);
+    const { stdout } = await exec("gh", ["api", "user", "--jq", ".login"], { timeout: 20_000 });
+    const username = stdout.trim();
     return {
       installed: true,
       loggedIn: true,
-      user: userMatch ? userMatch[1] : undefined,
+      user: username,
     };
   } catch (err: unknown) {
     const stderr =
@@ -76,14 +96,13 @@ export async function checkGitLabAuth(gitlabUrl?: string): Promise<{
 }> {
   const host = parseGitLabHost(gitlabUrl);
   try {
-    const { stdout, stderr } = await exec(path.join(os.homedir(), ".local/bin/glab"), ["auth", "status", "--hostname", host]);
-    const output = `${stdout}\n${stderr}`;
-    const userMatch = output.match(/Logged in to [^ ]+ as ([^ (]+)/i);
+    const { stdout } = await exec(gitCliExecutable("gitlab"), ["api", "user", "--hostname", host], { timeout: 20_000 });
+    const username = z.object({ username: z.string().min(1) }).parse(JSON.parse(stdout)).username;
     return {
       installed: true,
       loggedIn: true,
       host,
-      user: userMatch ? userMatch[1] : undefined,
+      user: username,
     };
   } catch (err: unknown) {
     const stderr =
@@ -162,146 +181,66 @@ export async function resolveExistingCheckout(base: string, host: string, name: 
   return matches[0];
 }
 
-interface RawGhRepo {
-  fullName?: string;
-  nameWithOwner?: string;
-  name?: string;
-  description?: string;
-  url?: string;
-  sshUrl?: string;
-  isPrivate?: boolean;
-  defaultBranchRef?: { name?: string };
-}
+const githubRepoSchema = z.object({
+  full_name: z.string().min(1), html_url: z.string().url(), name: z.string().optional(),
+  description: z.string().nullable().optional(), ssh_url: z.string().optional(), clone_url: z.string().optional(),
+  private: z.boolean().default(false), default_branch: z.string().optional(),
+});
 
-export async function fetchGitHubRepos(
-  query: string | undefined,
-  cloneBaseDir: string,
-): Promise<RepoItem[]> {
-  try {
-    let stdout = "";
-    if (query && query.trim()) {
-      const res = await exec("gh", [
-        "search",
-        "repos",
-        query.trim(),
-        "--limit",
-        "30",
-        "--json",
-        "fullName,name,description,url,sshUrl,isPrivate,defaultBranchRef",
-      ]);
-      stdout = res.stdout;
-    } else {
-      const res = await exec("gh", [
-        "repo",
-        "list",
-        "--limit",
-        "30",
-        "--json",
-        "nameWithOwner,name,description,url,sshUrl,isPrivate,defaultBranchRef",
-      ]);
-      stdout = res.stdout;
-    }
-
-    const items = JSON.parse(stdout || "[]") as RawGhRepo[];
-    const localIndex = await existingCheckouts(cloneBaseDir);
-    const results: RepoItem[] = [];
-
-    for (const item of items) {
-      const fullName = item.fullName || item.nameWithOwner;
-      if (!fullName) continue;
-      const matches = localIndex.get(`github.com/${fullName}`) ?? [];
-      const target = path.join(cloneBaseDir, "github.com", fullName);
-      const localPath = matches.length === 1 ? matches[0] : target;
-      const isLocal = matches.length > 0 || await isGitRepoLocally(target);
-
-      results.push({
-        id: `github:${fullName}`,
-        name: item.name || fullName.split("/")[1] || fullName,
-        fullName,
-        description: item.description || "",
-        url: item.url || `https://github.com/${fullName}`,
-        sshUrl: item.sshUrl || `git@github.com:${fullName}.git`,
-        httpUrl: item.url ? `${item.url}.git` : `https://github.com/${fullName}.git`,
-        defaultBranch: item.defaultBranchRef?.name || "main",
-        provider: "github",
-        isPrivate: Boolean(item.isPrivate),
-        isLocal,
-        localPath,
-      });
-    }
-
-    return results;
-  } catch (err: unknown) {
-    console.error("fetchGitHubRepos error:", err);
-    return [];
+export async function fetchGitHubRepos(query: string | undefined, cloneBaseDir: string): Promise<RepoItem[]> {
+  // /user/repos includes repositories shared by organizations and collaborators.
+  // `gh repo list` lists only repositories owned by the current user.
+  const items = await repositoryPages("github", "user/repos?affiliation=owner,collaborator,organization_member&sort=updated");
+  const localIndex = await existingCheckouts(cloneBaseDir);
+  const results: RepoItem[] = [];
+  for (const raw of items) {
+    const item = githubRepoSchema.parse(raw);
+    const fullName = item.full_name;
+    if (query && !`${fullName} ${item.description ?? ""}`.toLowerCase().includes(query.trim().toLowerCase())) continue;
+    const matches = localIndex.get(`github.com/${fullName}`) ?? [];
+    const target = path.join(cloneBaseDir, "github.com", fullName);
+    results.push({
+      id: `github:${fullName}`, name: item.name || fullName.split("/").at(-1)!, fullName,
+      description: item.description || "", url: item.html_url,
+      sshUrl: item.ssh_url || `git@github.com:${fullName}.git`,
+      httpUrl: item.clone_url || `${item.html_url}.git`,
+      defaultBranch: item.default_branch || "main", provider: "github", isPrivate: Boolean(item.private),
+      isLocal: matches.length > 0 || await isGitRepoLocally(target),
+      localPath: matches.length === 1 ? matches[0]! : target,
+    });
   }
+  return results;
 }
 
-interface RawGitLabRepo {
-  name?: string;
-  path_with_namespace?: string;
-  description?: string;
-  web_url?: string;
-  ssh_url_to_repo?: string;
-  http_url_to_repo?: string;
-  default_branch?: string;
-  visibility?: string;
-}
+const gitlabRepoSchema = z.object({
+  path_with_namespace: z.string().min(1), web_url: z.string().url(), name: z.string().optional(),
+  description: z.string().nullable().optional(), ssh_url_to_repo: z.string().optional(), http_url_to_repo: z.string().optional(),
+  default_branch: z.string().optional(), visibility: z.string(),
+});
 
-export async function fetchGitLabRepos(
-  query: string | undefined,
-  gitlabUrl: string | undefined,
-  cloneBaseDir: string,
-): Promise<RepoItem[]> {
+export async function fetchGitLabRepos(query: string | undefined, gitlabUrl: string | undefined, cloneBaseDir: string): Promise<RepoItem[]> {
   const host = parseGitLabHost(gitlabUrl);
-  try {
-    const apiPath =
-      query && query.trim()
-        ? `projects?search=${encodeURIComponent(query.trim())}&membership=true&per_page=30`
-        : `projects?membership=true&order_by=last_activity_at&per_page=30`;
-
-    const { stdout } = await exec(path.join(os.homedir(), ".local/bin/glab"), [
-      "api",
-      apiPath,
-      "--hostname",
-      host,
-    ]);
-
-    const items = JSON.parse(stdout || "[]") as RawGitLabRepo[];
-    if (!Array.isArray(items)) return [];
-
-    const results: RepoItem[] = [];
-    const localIndex = await existingCheckouts(cloneBaseDir);
-
-    for (const item of items) {
-      const fullName = item.path_with_namespace;
-      if (!fullName) continue;
-      const matches = localIndex.get(`${host.toLowerCase()}/${fullName}`) ?? [];
-      const target = path.join(cloneBaseDir, host, fullName);
-      const localPath = matches.length === 1 ? matches[0] : target;
-      const isLocal = matches.length > 0 || await isGitRepoLocally(target);
-
-      results.push({
-        id: `gitlab:${host}:${fullName}`,
-        name: item.name || fullName.split("/").pop() || fullName,
-        fullName,
-        description: item.description || "",
-        url: item.web_url || `https://${host}/${fullName}`,
-        sshUrl: item.ssh_url_to_repo || `git@${host}:${fullName}.git`,
-        httpUrl: item.http_url_to_repo || `https://${host}/${fullName}.git`,
-        defaultBranch: item.default_branch || "main",
-        provider: "gitlab",
-        isPrivate: item.visibility === "private" || item.visibility === "internal",
-        isLocal,
-        localPath,
-      });
-    }
-
-    return results;
-  } catch (err: unknown) {
-    console.error("fetchGitLabRepos error:", err);
-    return [];
+  const endpoint = "projects?membership=true&order_by=last_activity_at" + (query?.trim() ? `&search=${encodeURIComponent(query.trim())}` : "");
+  const items = await repositoryPages("gitlab", endpoint, host);
+  const localIndex = await existingCheckouts(cloneBaseDir);
+  const results: RepoItem[] = [];
+  for (const raw of items) {
+    const item = gitlabRepoSchema.parse(raw);
+    const fullName = item.path_with_namespace;
+    const matches = localIndex.get(`${host.toLowerCase()}/${fullName}`) ?? [];
+    const target = path.join(cloneBaseDir, host, fullName);
+    results.push({
+      id: `gitlab:${host}:${fullName}`, name: item.name || fullName.split("/").at(-1)!, fullName,
+      description: item.description || "", url: item.web_url,
+      sshUrl: item.ssh_url_to_repo || `git@${host}:${fullName}.git`,
+      httpUrl: item.http_url_to_repo || `https://${host}/${fullName}.git`,
+      defaultBranch: item.default_branch || "main", provider: "gitlab",
+      isPrivate: item.visibility === "private" || item.visibility === "internal",
+      isLocal: matches.length > 0 || await isGitRepoLocally(target),
+      localPath: matches.length === 1 ? matches[0]! : target,
+    });
   }
+  return results;
 }
 
 export async function cloneAndCreateWorkspace(
@@ -328,7 +267,13 @@ export async function cloneAndCreateWorkspace(
   if (!isLocal) {
     await fs.mkdir(path.dirname(targetPath), { recursive: true });
     console.log(`[git-workspace] Cloning ${params.cloneUrl} into ${targetPath}...`);
-    await exec("git", ["clone", params.cloneUrl, targetPath]);
+    const cloneArgs = ["clone", params.cloneUrl, targetPath];
+    if (params.cloneUrl.startsWith("https://")) {
+      const binary = gitCliExecutable(params.provider);
+      const quoted = "'" + binary.replace(/'/g, "'\"'\"'") + "'";
+      cloneArgs.unshift("-c", "credential.helper=", "-c", `credential.helper=!${quoted} auth git-credential`);
+    }
+    await exec("git", cloneArgs, { env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }, timeout: 120_000 });
     console.log(`[git-workspace] Clone completed for ${params.repoFullName}`);
   }
 
