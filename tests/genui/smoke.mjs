@@ -76,6 +76,16 @@ try {
     await page.getByText("Multiple files stay separate", { exact: true }).waitFor();
     await page.getByText("Provider message loaded as text", { exact: true }).waitFor();
     assert.equal(await page.getByText(/Loading Acceptance|Draft markdown needs text/).count(), 0);
+    const beforeFileUrl = page.url();
+    await page.getByRole("button", { name: "/tmp/opencode/hq-genui/draft.txt", exact: true }).click();
+    await page.getByRole("button", { name: "Закрыть файл", exact: true }).waitFor();
+    assert.equal(page.url(), beforeFileUrl, "file preview must not navigate the workspace");
+    assert.equal(await page.getByText("Provider message loaded as text", { exact: true }).count(), 2);
+    await page.getByRole("button", { name: "Закрыть файл", exact: true }).click();
+    await page.getByRole("button", { name: "/etc/passwd", exact: true }).click();
+    await page.getByText(/outside|allowed|permitted|workspace/i).last().waitFor();
+    assert.equal(page.url(), beforeFileUrl);
+    await page.getByRole("button", { name: "Закрыть файл", exact: true }).click();
     await page.getByText("21", { exact: true }).waitFor();
     await page.getByRole("button", { name: "+", exact: true }).click();
     await page.getByText("28", { exact: true }).waitFor();
@@ -92,7 +102,7 @@ try {
     assert(!registrations.addSidebarHeaderItem?.includes("gallery"));
     assert.deepEqual(errors, []);
     await page.screenshot({ path: join(output, `${name}.png`), fullPage: true });
-    results.push({ name: `${name}: multiple Load, Acceptance, Draft, state, Send, sandbox, no overflow`, status: "passed" });
+    results.push({ name: `${name}: multiple Load, Acceptance, Draft, state, Send, sandbox, file preview/close/access denial, no navigation or overflow`, status: "passed" });
     await page.close();
   }
   const galleryPage = await browser.newPage({ viewport: { width: 390, height: 900 } });

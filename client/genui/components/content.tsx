@@ -338,53 +338,42 @@ export function Image({ props }: { props: Props }) {
 }
 
 export function File({ props }: { props: Props }) {
-  const { theme, openFile } = useUiRuntime();
+  const { theme, readText } = useUiRuntime();
   const filePath = text(props.path);
   const line = finiteNumber(props.line);
   const label = line !== null ? `${filePath}:${Math.round(line)}` : filePath;
-
-  const onWeb = Platform.OS === "web";
-  const chip = (
-    <Pressable
-      accessibilityRole="button"
-      onPress={() => {
-        if (!onWeb && openFile) void openFile(filePath, line ?? undefined);
-      }}
-      style={{
-        alignSelf: "flex-start",
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 6,
-        paddingHorizontal: 8,
-        paddingVertical: 4,
-        borderRadius: 6,
-        backgroundColor: theme.colors.surface2,
-        borderWidth: StyleSheet.hairlineWidth,
-        borderColor: theme.colors.border,
-      }}
-    >
-      <PaseoIcon name="FileText" size={13} color={theme.colors.accent} />
-      <RNText selectable style={{ color: theme.colors.foreground, fontFamily: "monospace", fontSize: 12 }}>
-        {label}
-      </RNText>
-    </Pressable>
-  );
-  if (!onWeb) return chip;
-
-  // Paseo renders chat file links as `<a style="display: contents">`. Plugins such as
-  // wiki-viewer catch clicks on those and replay the click when they decline, so the
-  // anchor's own handler is the fallback that opens a Paseo file tab.
-  return React.createElement(
-    "a",
-    {
-      href: label,
-      style: { display: "contents" },
-      onClick: (event: { preventDefault(): void }) => {
-        event.preventDefault();
-        if (openFile) void openFile(filePath, line ?? undefined);
-      },
-    },
-    chip,
+  const [opened, setOpened] = useState(false);
+  const [result, setResult] = useState<{ ok: true; text: string } | { ok: false; error: string } | null>(null);
+  useEffect(() => {
+    if (!opened) return;
+    let active = true;
+    setResult(null);
+    const timer = setTimeout(() => {
+      if (active) { active = false; setResult({ ok: false, error: "Время ожидания файла истекло" }); }
+    }, 15000);
+    Promise.resolve().then(() => readText ? readText(filePath) : { ok: false as const, error: "Просмотр файлов недоступен" }).then(
+      value => { if (active) { clearTimeout(timer); setResult(value); } },
+      error => { if (active) { clearTimeout(timer); setResult({ ok: false, error: String(error) }); } },
+    );
+    return () => { active = false; clearTimeout(timer); };
+  }, [opened, filePath, readText]);
+  // Stay in the chat on every platform. History routing can open a blank host pane,
+  // particularly for paths outside the workspace. The reader enforces file access.
+  return (
+    <View style={{ gap: 8 }}>
+      <Pressable accessibilityRole="button" accessibilityLabel={label} onPress={() => setOpened(value => !value)}
+        style={{ alignSelf: "flex-start", padding: 8, borderRadius: 6, backgroundColor: theme.colors.surface2 }}>
+        <RNText style={{ color: theme.colors.accent, fontSize: 12 }}>{label}</RNText>
+      </Pressable>
+      {opened ? <View style={{ gap: 8, padding: 10, backgroundColor: theme.colors.surface2, borderRadius: 6 }}>
+        <Pressable accessibilityRole="button" onPress={() => setOpened(false)}>
+          <RNText style={{ color: theme.colors.accent }}>Закрыть файл</RNText>
+        </Pressable>
+        {result === null ? <RNText style={{ color: theme.colors.foregroundMuted }}>Загрузка файла...</RNText>
+          : result.ok ? <RNText selectable style={{ color: theme.colors.foreground, fontFamily: "monospace", fontSize: 12 }}>{result.text}</RNText>
+          : <RNText style={{ color: theme.colors.statusDanger }}>{result.error}</RNText>}
+      </View> : null}
+    </View>
   );
 }
 

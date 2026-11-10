@@ -16,6 +16,8 @@ Card("Штаб: интерактивный ответ", [
   Table(["Проверка", "Значение"], rows),
   Details("Проверки", [Acceptance(Load("/tmp/opencode/hq-genui/acceptance.json"))]),
   Draft(Load("/tmp/opencode/hq-genui/draft.txt"), title: "Текст провайдеру"),
+  File("/tmp/opencode/hq-genui/draft.txt"),
+  File("/etc/passwd"),
   Button("Применить", Send("Количество " + $n))
 ])`;
 const fence = (lang: string, body: string) => "```" + lang + "\n" + body + "\n```";
